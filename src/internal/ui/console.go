@@ -1,7 +1,10 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,10 +15,13 @@ import (
 type Console struct {
 	lastScanUpdate time.Time
 	lastHashUpdate time.Time
+	reader         *bufio.Reader
 }
 
 func NewConsole() *Console {
-	return &Console{}
+	return &Console{
+		reader: bufio.NewReader(os.Stdin),
+	}
 }
 
 func (c *Console) OnScanProgress(p scanner.Progress) {
@@ -57,6 +63,66 @@ func (c *Console) PrintDuplicateGroups(groups []duplicates.Group) {
 			fmt.Printf("    size: %s\n", formatBytes(file.Size))
 		}
 	}
+}
+
+func (c *Console) CollectDeletionSelection(groups []duplicates.Group) []string {
+	selected := make([]string, 0, 128)
+
+	fmt.Println()
+	fmt.Println("Selection mode: for each group, enter file numbers to delete (comma-separated).")
+	fmt.Println("Leave blank to skip a group.")
+
+	for i, group := range groups {
+		fmt.Printf("\nGroup %d (size: %s)\n", i+1, formatBytes(group.Size))
+		for idx, file := range group.Files {
+			fmt.Printf("  [%d] %s\n", idx+1, file.Path)
+		}
+		fmt.Print("Delete indexes: ")
+
+		input, err := c.reader.ReadString('\n')
+		if err != nil {
+			fmt.Printf("Input error: %v. Skipping group.\n", err)
+			continue
+		}
+		input = strings.TrimSpace(input)
+		if input == "" {
+			continue
+		}
+
+		parts := strings.Split(input, ",")
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			n, err := strconv.Atoi(part)
+			if err != nil || n < 1 || n > len(group.Files) {
+				fmt.Printf("Ignoring invalid index: %q\n", part)
+				continue
+			}
+			selected = append(selected, group.Files[n-1].Path)
+		}
+	}
+
+	return selected
+}
+
+func (c *Console) ConfirmDeletion(count int) bool {
+	if count == 0 {
+		return false
+	}
+	fmt.Printf("\nConfirm deletion of %d file(s)? Type YES to proceed: ", count)
+	input, err := c.reader.ReadString('\n')
+	if err != nil {
+		fmt.Printf("Input error: %v\n", err)
+		return false
+	}
+	return strings.TrimSpace(input) == "YES"
+}
+
+func (c *Console) PrintDeletionResults(resultsCount int, failedCount int, dryRun bool) {
+	if dryRun {
+		fmt.Printf("\nDry run complete. %d selected file(s) would be deleted.\n", resultsCount)
+		return
+	}
+	fmt.Printf("\nDeletion complete. Success: %d, Failed: %d\n", resultsCount-failedCount, failedCount)
 }
 
 func formatBytes(bytes int64) string {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"duplica-scan/src/internal/cleanup"
 	"duplica-scan/src/internal/duplicates"
 	"duplica-scan/src/internal/hash"
 	"duplica-scan/src/internal/scanner"
@@ -44,4 +45,29 @@ func main() {
 	fmt.Printf("Duplicate groups found: %d\n", len(groups))
 	fmt.Printf("Scanner non-fatal errors: %d | Hash non-fatal errors: %d\n", len(scanSummary.Errors), len(hashErrors))
 	fmt.Printf("Completed in %s\n", time.Since(start).Round(time.Millisecond))
+
+	if len(groups) == 0 {
+		return
+	}
+
+	selected := console.CollectDeletionSelection(groups)
+	if len(selected) == 0 {
+		fmt.Println("No files selected for deletion.")
+		return
+	}
+
+	if !console.ConfirmDeletion(len(selected)) {
+		fmt.Println("Deletion canceled by user.")
+		return
+	}
+
+	results := cleanup.DeleteFiles(selected, *dryRun)
+	failures := 0
+	for _, result := range results {
+		if result.Err != nil {
+			failures++
+			fmt.Printf("Failed: %s (%v)\n", result.Path, result.Err)
+		}
+	}
+	console.PrintDeletionResults(len(results), failures, *dryRun)
 }
