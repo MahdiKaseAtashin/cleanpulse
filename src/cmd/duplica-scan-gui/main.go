@@ -86,7 +86,8 @@ func main() {
 		}, w).Show()
 	})
 
-	runBtn := widget.NewButton("Run Scan", func() {
+	var runBtn *widget.Button
+	runBtn = widget.NewButton("Run Scan", func() {
 		rootPath := strings.TrimSpace(pathEntry.Text)
 		if rootPath == "" {
 			dialog.ShowInformation("Missing path", "Please choose a directory or drive root to scan.", w)
