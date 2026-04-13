@@ -6,6 +6,8 @@ package main
 import (
 	_ "embed"
 	"fmt"
+	"image/color"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -14,7 +16,6 @@ import (
 	"time"
 
 	"duplica-scan/src/internal/buildinfo"
-	"duplica-scan/src/internal/cleanup"
 	"duplica-scan/src/internal/duplicates"
 	"duplica-scan/src/internal/hash"
 	"duplica-scan/src/internal/report"
@@ -23,6 +24,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -39,6 +41,8 @@ func main() {
 	w := a.NewWindow(fmt.Sprintf("Duplica Scan %s", buildinfo.Version))
 	w.SetIcon(logoResource)
 	w.Resize(fyne.NewSize(980, 760))
+
+	var scanView fyne.CanvasObject
 
 	pathEntry := widget.NewEntry()
 	pathEntry.SetPlaceHolder("Select directory or drive root")
@@ -70,8 +74,14 @@ func main() {
 	exportPathEntry.SetPlaceHolder("./reports/duplicate-report-*.json")
 
 	statusLabel := widget.NewLabel("Ready")
-	progress := widget.NewProgressBarInfinite()
-	progress.Hide()
+	stepLabel := widget.NewLabel("")
+	stepLabel.Hide()
+	scanProgress := widget.NewProgressBarInfinite()
+	scanProgress.Hide()
+	hashProgress := widget.NewProgressBar()
+	hashProgress.Hide()
+	detailLabel := widget.NewLabel("")
+	detailLabel.Hide()
 
 	output := widget.NewMultiLineEntry()
 	output.Wrapping = fyne.TextWrapWord
@@ -144,8 +154,16 @@ func main() {
 		}
 
 		output.SetText("")
-		statusLabel.SetText("Running scan...")
-		progress.Show()
+		fyne.Do(func() {
+			statusLabel.SetText("Running scan…")
+			stepLabel.SetText("Step 1 of 2 · Scanning filesystem")
+			stepLabel.Show()
+			detailLabel.SetText("Files found: 0")
+			detailLabel.Show()
+			scanProgress.Show()
+			hashProgress.Hide()
+			hashProgress.SetValue(0)
+		})
 		runBtn.Disable()
 
 		go func() {
@@ -157,10 +175,27 @@ func main() {
 				MaxSizeBytes:      maxSize,
 			}
 
-			scanSummary, scanErr := scanner.ScanWithOptions(rootPath, nil, filterOptions)
+			var lastScanUpdate time.Time
+			scanSummary, scanErr := scanner.ScanWithOptions(rootPath, func(p scanner.Progress) {
+				now := time.Now()
+				if now.Sub(lastScanUpdate) < 40*time.Millisecond && p.FilesSeen%50 != 0 {
+					return
+				}
+				lastScanUpdate = now
+				cur := p.Current
+				if len(cur) > 72 {
+					cur = "…" + cur[len(cur)-69:]
+				}
+				fyne.Do(func() {
+					detailLabel.SetText(fmt.Sprintf("Files found: %d · %s", p.FilesSeen, cur))
+				})
+			}, filterOptions)
 			if scanErr != nil {
 				fyne.Do(func() {
-					progress.Hide()
+					scanProgress.Hide()
+					hashProgress.Hide()
+					stepLabel.Hide()
+					detailLabel.Hide()
 					runBtn.Enable()
 					statusLabel.SetText("Scan failed")
 					dialog.ShowError(scanErr, w)
@@ -169,14 +204,35 @@ func main() {
 			}
 
 			appendOutput(fmt.Sprintf("Scanned files: %d", len(scanSummary.Files)))
-			appendOutput("Hashing candidates...")
+
+			fyne.Do(func() {
+				stepLabel.SetText("Step 2 of 2 · Hashing candidate files")
+				scanProgress.Hide()
+				hashProgress.Show()
+				hashProgress.SetValue(0)
+				detailLabel.SetText("Preparing hash…")
+			})
 
 			groups, hashErrors := duplicates.DetectWithOptions(
 				scanSummary.Files,
 				hash.SHA256File,
-				nil,
+				func(p duplicates.Progress) {
+					fyne.Do(func() {
+						if p.TotalToHash > 0 {
+							hashProgress.SetValue(float64(p.HashedFiles) / float64(p.TotalToHash))
+						}
+						cur := p.CurrentPath
+						if len(cur) > 64 {
+							cur = "…" + cur[len(cur)-61:]
+						}
+						detailLabel.SetText(fmt.Sprintf("Hashed %d / %d · %s", p.HashedFiles, p.TotalToHash, cur))
+					})
+				},
 				duplicates.DetectOptions{HashWorkers: hashWorkers},
 			)
+			fyne.Do(func() {
+				hashProgress.SetValue(1)
+			})
 
 			appendOutput(fmt.Sprintf("Duplicate groups found: %d", len(groups)))
 			appendOutput(fmt.Sprintf("Scanner non-fatal errors: %d", len(scanSummary.Errors)))
@@ -192,9 +248,21 @@ func main() {
 				appendOutput(fmt.Sprintf("Auto-select (%s) picked %d file(s).", strategy, len(initialSelection)))
 			}
 
-			fyne.Do(func() {
-				showResultsWindow(a, groups, dryRunCheck.Checked, initialSelection, appendOutput)
+			sorted := append([]duplicates.Group(nil), groups...)
+			sort.Slice(sorted, func(i, j int) bool {
+				if sorted[i].Size == sorted[j].Size {
+					return sorted[i].Hash < sorted[j].Hash
+				}
+				return sorted[i].Size > sorted[j].Size
 			})
+
+			onBack := func() {
+				fyne.Do(func() {
+					w.SetContent(scanView)
+					statusLabel.SetText("Ready")
+				})
+			}
+			resultsView := buildResultsView(w, onBack, groups, sorted, dryRunCheck.Checked, initialSelection, appendOutput)
 
 			if exportFormat != "" {
 				if err := report.Export(groups, exportFormat, exportPath); err != nil {
@@ -205,9 +273,13 @@ func main() {
 			}
 
 			fyne.Do(func() {
-				progress.Hide()
+				scanProgress.Hide()
+				hashProgress.Hide()
+				stepLabel.Hide()
+				detailLabel.Hide()
 				runBtn.Enable()
 				statusLabel.SetText(fmt.Sprintf("Done in %s", time.Since(start).Round(time.Millisecond)))
+				w.SetContent(resultsView)
 			})
 		}()
 	})
@@ -224,14 +296,24 @@ func main() {
 		widget.NewFormItem("Export path", exportPathEntry),
 	)
 
-	content := container.NewBorder(
-		container.NewVBox(widget.NewLabel(fmt.Sprintf("Duplica Scan GUI %s", buildinfo.Version)), dryRunCheck, form, runBtn, statusLabel, progress),
+	scanView = container.NewBorder(
+		container.NewVBox(
+			widget.NewLabel(fmt.Sprintf("Duplica Scan GUI %s", buildinfo.Version)),
+			dryRunCheck,
+			form,
+			runBtn,
+			statusLabel,
+			stepLabel,
+			scanProgress,
+			hashProgress,
+			detailLabel,
+		),
 		nil,
 		nil,
 		nil,
 		container.NewVScroll(output),
 	)
-	w.SetContent(content)
+	w.SetContent(scanView)
 	w.ShowAndRun()
 }
 
@@ -331,77 +413,40 @@ const (
 	resultsMaxFilesPerGroup = 80
 )
 
-func showResultsWindow(
-	a fyne.App,
-	groups []duplicates.Group,
-	dryRun bool,
-	initialSelection map[string]struct{},
-	appendOutput func(string),
-) {
-	totalFiles := 0
-	totalReclaimable := int64(0)
-	for _, g := range groups {
-		totalFiles += len(g.Files)
-		if len(g.Files) > 1 {
-			totalReclaimable += int64(len(g.Files)-1) * g.Size
-		}
-	}
+// Light dashboard-style palette for the scan results view (inspired by soft UI cards).
+var (
+	resultsBgPage       = color.NRGBA{R: 245, G: 247, B: 250, A: 255}
+	resultsAccentBlue   = color.NRGBA{R: 224, G: 247, B: 250, A: 255}
+	resultsAccentPink   = color.NRGBA{R: 252, G: 228, B: 236, A: 255}
+	resultsAccentPurple = color.NRGBA{R: 243, G: 229, B: 245, A: 255}
+)
 
-	summaryLabel := widget.NewLabel(
-		fmt.Sprintf(
-			"Groups: %d | Candidate files: %d | Estimated reclaimable: %s | Mode: %s",
-			len(groups),
-			totalFiles,
-			formatBytes(totalReclaimable),
-			map[bool]string{true: "Dry Run", false: "Delete"}[dryRun],
-		),
-	)
-
-	win := a.NewWindow("Scan Results")
-	win.Resize(fyne.NewSize(960, 720))
-
-	loading := container.NewVBox(
-		widget.NewLabel("Preparing the result list…"),
-		widget.NewProgressBarInfinite(),
-	)
-	win.SetContent(container.NewBorder(
-		container.NewVBox(
-			widget.NewLabel("Review duplicates and choose actions"),
-			summaryLabel,
-		),
-		nil, nil, nil,
-		loading,
-	))
-	win.Show()
-
-	go func() {
-		sorted := append([]duplicates.Group(nil), groups...)
-		sort.Slice(sorted, func(i, j int) bool {
-			if sorted[i].Size == sorted[j].Size {
-				return sorted[i].Hash < sorted[j].Hash
-			}
-			return sorted[i].Size > sorted[j].Size
-		})
-
-		fyne.Do(func() {
-			mountResultsWindowContent(win, groups, sorted, dryRun, initialSelection, appendOutput)
-		})
-	}()
+// resultsTableRow is one logical row in the duplicate-files table.
+type resultsTableRow struct {
+	path         string
+	name         string
+	size         int64
+	groupNum     int
+	fileNum      int
+	overflowNote string // non-empty => informational row (no checkbox)
 }
 
-func mountResultsWindowContent(
-	win fyne.Window,
+func buildResultsView(
+	parent fyne.Window,
+	onBack func(),
 	originalGroups []duplicates.Group,
 	sortedGroups []duplicates.Group,
 	dryRun bool,
 	initialSelection map[string]struct{},
 	appendOutput func(string),
-) {
+) fyne.CanvasObject {
+	totalGroupCount := len(sortedGroups)
+
 	selected := make(map[string]struct{}, 512)
 	for p := range initialSelection {
 		selected[p] = struct{}{}
 	}
-	checkByPath := make(map[string]*widget.Check, resultsGroupsPerPage*resultsMaxFilesPerGroup)
+	var pageRows []resultsTableRow
 
 	totalFiles := 0
 	totalReclaimable := int64(0)
@@ -419,7 +464,7 @@ func mountResultsWindowContent(
 			len(originalGroups),
 			totalFiles,
 			formatBytes(totalReclaimable),
-			map[bool]string{true: "Dry Run", false: "Delete"}[dryRun],
+			map[bool]string{true: "Dry run (scan only)", false: "Delete"}[dryRun],
 		),
 	)
 
@@ -447,11 +492,9 @@ func mountResultsWindowContent(
 	prevBtn := widget.NewButton("Previous", func() {})
 	nextBtn := widget.NewButton("Next", func() {})
 
-	scroll := container.NewVScroll(widget.NewLabel(""))
+	var resultsTable *widget.Table
 
 	rebuildPage := func() {
-		checkByPath = make(map[string]*widget.Check, resultsGroupsPerPage*resultsMaxFilesPerGroup)
-
 		start := currentPage * resultsGroupsPerPage
 		end := start + resultsGroupsPerPage
 		if end > len(sortedGroups) {
@@ -468,20 +511,17 @@ func mountResultsWindowContent(
 			nextBtn.Enable()
 		}
 
+		pageRows = nil
 		if len(sortedGroups) == 0 {
-			scroll.Content = widget.NewLabel("No duplicates found.")
-			scroll.Refresh()
+			if resultsTable != nil {
+				resultsTable.Refresh()
+			}
 			return
 		}
 
-		totalGroups := len(sortedGroups)
-		groupRows := make([]fyne.CanvasObject, 0, end-start)
 		globalIdx := start
 		for _, group := range sortedGroups[start:end] {
-			header := widget.NewLabel(fmt.Sprintf(
-				"Group %d of %d | size: %d bytes | hash: %s",
-				globalIdx+1, totalGroups, group.Size, group.Hash,
-			))
+			gnum := globalIdx + 1
 			globalIdx++
 
 			files := group.Files
@@ -492,46 +532,130 @@ func mountResultsWindowContent(
 				files = files[:resultsMaxFilesPerGroup]
 			}
 
-			fileRows := make([]fyne.CanvasObject, 0, len(files)+1)
 			for fi, file := range files {
-				path := file.Path
-				pathCopy := path
-				fileNum := fi + 1
-				check := widget.NewCheck(
-					fmt.Sprintf("%d. %s | %s | %d bytes", fileNum, file.Name, path, file.Size),
-					func(checked bool) {
-						if checked {
-							selected[pathCopy] = struct{}{}
-						} else {
-							delete(selected, pathCopy)
-						}
-						updateCount()
-					},
-				)
-				if _, ok := selected[path]; ok {
-					check.SetChecked(true)
-				}
-				checkByPath[path] = check
-				fileRows = append(fileRows, check)
+				pageRows = append(pageRows, resultsTableRow{
+					path:     file.Path,
+					name:     file.Name,
+					size:     file.Size,
+					groupNum: gnum,
+					fileNum:  fi + 1,
+				})
 			}
 			if overflow > 0 {
-				fileRows = append(fileRows, widget.NewLabel(fmt.Sprintf(
-					"… files %d–%d not shown (%d more; %d file(s) in this group — use Export for the full list).",
-					resultsMaxFilesPerGroup+1, totalFilesInGroup, overflow, totalFilesInGroup,
-				)))
+				pageRows = append(pageRows, resultsTableRow{
+					overflowNote: fmt.Sprintf(
+						"… files %d–%d not shown (%d more; %d file(s) in this group — use Export for the full list).",
+						resultsMaxFilesPerGroup+1, totalFilesInGroup, overflow, totalFilesInGroup,
+					),
+				})
 			}
-			groupRows = append(groupRows, container.NewVBox(header, container.NewVBox(fileRows...)))
 		}
 
-		scroll.Content = container.NewVBox(groupRows...)
-		scroll.ScrollToTop()
-		scroll.Refresh()
+		if resultsTable != nil {
+			resultsTable.ScrollToTop()
+			resultsTable.Refresh()
+		}
 	}
 
+	createTableCell := func() fyne.CanvasObject {
+		chk := widget.NewCheck("", nil)
+		lab := widget.NewLabel("")
+		return container.NewStack(lab, chk)
+	}
+
+	updateTableCell := func(id widget.TableCellID, obj fyne.CanvasObject) {
+		if id.Row < 0 || id.Col < 0 {
+			return
+		}
+		if id.Row >= len(pageRows) {
+			return
+		}
+		row := pageRows[id.Row]
+		st := obj.(*fyne.Container)
+		lab := st.Objects[0].(*widget.Label)
+		chk := st.Objects[1].(*widget.Check)
+
+		if row.overflowNote != "" {
+			chk.Hide()
+			lab.Show()
+			switch id.Col {
+			case 0, 1, 2, 3, 5:
+				lab.SetText("")
+			case 4:
+				lab.Wrapping = fyne.TextWrapWord
+				lab.SetText(row.overflowNote)
+			}
+			return
+		}
+
+		path := row.path
+		switch id.Col {
+		case 0:
+			lab.Hide()
+			chk.Show()
+			_, on := selected[path]
+			chk.SetChecked(on)
+			chk.OnChanged = func(on bool) {
+				if on {
+					selected[path] = struct{}{}
+				} else {
+					delete(selected, path)
+				}
+				updateCount()
+			}
+		case 1:
+			chk.Hide()
+			lab.Show()
+			lab.Wrapping = fyne.TextWrapOff
+			lab.SetText(strconv.Itoa(row.fileNum))
+		case 2:
+			chk.Hide()
+			lab.Show()
+			lab.SetText(fmt.Sprintf("%d / %d", row.groupNum, totalGroupCount))
+		case 3:
+			chk.Hide()
+			lab.Show()
+			lab.SetText(row.name)
+		case 4:
+			chk.Hide()
+			lab.Show()
+			lab.Wrapping = fyne.TextWrapWord
+			lab.SetText(row.path)
+		case 5:
+			chk.Hide()
+			lab.Show()
+			lab.SetText(formatBytes(row.size))
+		}
+	}
+
+	resultsTable = widget.NewTable(
+		func() (int, int) { return len(pageRows), 6 },
+		createTableCell,
+		updateTableCell,
+	)
+	resultsTable.ShowHeaderRow = true
+	resultsTable.ShowHeaderColumn = false
+	resultsTable.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
+		l := o.(*widget.Label)
+		l.TextStyle = fyne.TextStyle{Bold: true}
+		if id.Row != -1 || id.Col < 0 {
+			return
+		}
+		headers := []string{"Select", "#", "Group", "Name", "Path", "Size"}
+		if id.Col < len(headers) {
+			l.SetText(headers[id.Col])
+		}
+	}
+	resultsTable.SetColumnWidth(0, 72)
+	resultsTable.SetColumnWidth(1, 40)
+	resultsTable.SetColumnWidth(2, 88)
+	resultsTable.SetColumnWidth(3, 160)
+	resultsTable.SetColumnWidth(4, 320)
+	resultsTable.SetColumnWidth(5, 112)
+
 	syncVisibleChecks := func() {
-		for path, check := range checkByPath {
-			_, ok := selected[path]
-			check.SetChecked(ok)
+		if resultsTable != nil {
+			resultsTable.Refresh()
 		}
 		updateCount()
 	}
@@ -561,13 +685,10 @@ func mountResultsWindowContent(
 	})
 
 	deleteLabel := "Delete"
-	if dryRun {
-		deleteLabel = "Simulate delete"
-	}
 
 	confirmAndDelete := func() {
 		if len(selected) == 0 {
-			dialog.ShowInformation("No selection", "Select at least one file.", win)
+			dialog.ShowInformation("No selection", "Select at least one file.", parent)
 			return
 		}
 		paths := make([]string, 0, len(selected))
@@ -576,20 +697,11 @@ func mountResultsWindowContent(
 		}
 		sort.Strings(paths)
 
-		var title, message string
-		if dryRun {
-			title = "Simulate deletion?"
-			message = fmt.Sprintf(
-				"Are you sure you want to simulate deletion for %d selected file(s)? No files will be removed.",
-				len(paths),
-			)
-		} else {
-			title = "Are you sure?"
-			message = fmt.Sprintf(
-				"This will permanently delete %d selected file(s). This cannot be undone.",
-				len(paths),
-			)
-		}
+		title := "Are you sure?"
+		message := fmt.Sprintf(
+			"This will permanently delete %d selected file(s) from disk. This cannot be undone.",
+			len(paths),
+		)
 		dialog.NewConfirm(
 			title,
 			message,
@@ -597,53 +709,65 @@ func mountResultsWindowContent(
 				if !ok {
 					return
 				}
-				results := cleanup.DeleteFiles(paths, dryRun)
-				failures := 0
-				for _, r := range results {
-					if r.Err != nil {
-						failures++
-						appendOutput(fmt.Sprintf("Failed: %s (%v)", r.Path, r.Err))
+				n := len(paths)
+				prog := widget.NewProgressBar()
+				prog.Max = 1
+				status := widget.NewLabel("")
+				body := container.NewVBox(
+					status,
+					prog,
+				)
+				dlg := dialog.NewCustomWithoutButtons("Deleting files", body, parent)
+				dlg.Show()
+
+				go func() {
+					failures := 0
+					for i, path := range paths {
+						idx := i + 1
+						fyne.Do(func() {
+							if n > 0 {
+								prog.SetValue(float64(idx) / float64(n))
+								status.SetText(fmt.Sprintf("Deleting %d of %d (%.0f%%)…", idx, n, 100*float64(idx)/float64(n)))
+							}
+						})
+						err := os.Remove(path)
+						if err != nil {
+							failures++
+							appendOutput(fmt.Sprintf("Failed: %s (%v)", path, err))
+						}
 					}
-				}
-				appendOutput(fmt.Sprintf("Result action completed. Success: %d, Failed: %d", len(results)-failures, failures))
-				dialog.ShowInformation("Action complete", fmt.Sprintf("Success: %d, Failed: %d", len(results)-failures, failures), win)
+					fyne.Do(func() {
+						dlg.Hide()
+						appendOutput(fmt.Sprintf("Result action completed. Success: %d, Failed: %d", n-failures, failures))
+						dialog.ShowInformation("Action complete", fmt.Sprintf("Success: %d, Failed: %d", n-failures, failures), parent)
+					})
+				}()
 			},
-			win,
+			parent,
 		).Show()
 	}
 
-	deleteBtn := widget.NewButton(deleteLabel, confirmAndDelete)
-	if dryRun {
-		deleteBtn.Importance = widget.MediumImportance
-	} else {
-		deleteBtn.Importance = widget.DangerImportance
-	}
-
 	bottomDeleteBtn := widget.NewButton(deleteLabel, confirmAndDelete)
-	if dryRun {
-		bottomDeleteBtn.Importance = widget.MediumImportance
-	} else {
-		bottomDeleteBtn.Importance = widget.DangerImportance
-	}
+	bottomDeleteBtn.Importance = widget.DangerImportance
 
 	exportCSVBtn := widget.NewButton("Export CSV", func() {
 		path := defaultExportPath(report.FormatCSV)
 		if err := report.Export(originalGroups, report.FormatCSV, path); err != nil {
-			dialog.ShowError(err, win)
+			dialog.ShowError(err, parent)
 			return
 		}
 		appendOutput("CSV exported: " + path)
-		dialog.ShowInformation("Export complete", "CSV exported to:\n"+path, win)
+		dialog.ShowInformation("Export complete", "CSV exported to:\n"+path, parent)
 	})
 
 	exportJSONBtn := widget.NewButton("Export JSON", func() {
 		path := defaultExportPath(report.FormatJSON)
 		if err := report.Export(originalGroups, report.FormatJSON, path); err != nil {
-			dialog.ShowError(err, win)
+			dialog.ShowError(err, parent)
 			return
 		}
 		appendOutput("JSON exported: " + path)
-		dialog.ShowInformation("Export complete", "JSON exported to:\n"+path, win)
+		dialog.ShowInformation("Export complete", "JSON exported to:\n"+path, parent)
 	})
 
 	prevBtn.OnTapped = func() {
@@ -660,32 +784,60 @@ func mountResultsWindowContent(
 	}
 
 	updateCount()
-	toolbar := container.NewHBox(
-		selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn,
-		deleteBtn, exportCSVBtn, exportJSONBtn,
+
+	titleLbl := widget.NewLabel("Scan results")
+	titleLbl.TextStyle = fyne.TextStyle{Bold: true}
+
+	wrapWithTint := func(c color.Color, inner fyne.CanvasObject) fyne.CanvasObject {
+		rect := canvas.NewRectangle(c)
+		return container.NewMax(rect, container.NewPadded(inner))
+	}
+
+	overviewCard := widget.NewCard("Overview", "", wrapWithTint(resultsAccentBlue, container.NewVBox(summaryLabel, countLabel)))
+
+	selectionGroup := container.NewVBox(
+		widget.NewLabel("Selection"),
+		container.NewHBox(selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn),
 	)
-	toolbarScroll := container.NewHScroll(toolbar)
+	exportGroup := container.NewVBox(
+		widget.NewLabel("Export"),
+		container.NewHBox(exportCSVBtn, exportJSONBtn),
+	)
+	actionsRow := container.NewHBox(
+		container.NewPadded(selectionGroup),
+		layout.NewSpacer(),
+		container.NewPadded(exportGroup),
+	)
+	actionsCard := widget.NewCard("Actions", "", wrapWithTint(resultsAccentPurple, actionsRow))
 
-	paginationBar := container.NewHBox(prevBtn, pageLabel, nextBtn)
+	tableCard := widget.NewCard("Duplicate files", "", wrapWithTint(resultsAccentPink, resultsTable))
 
-	cancelBtn := widget.NewButton("Cancel", func() {
-		win.Close()
+	paginationBar := container.NewHBox(prevBtn, pageLabel, nextBtn, layout.NewSpacer())
+	pageRow := container.NewHBox(layout.NewSpacer(), paginationBar)
+
+	cancelBtn := widget.NewButton("Back to scan", func() {
+		onBack()
 	})
-	bottomBar := container.NewHBox(layout.NewSpacer(), bottomDeleteBtn, cancelBtn)
+	bottomBar := container.NewHBox(layout.NewSpacer(), cancelBtn, bottomDeleteBtn)
 
-	content := container.NewBorder(
-		container.NewVBox(
-			widget.NewLabel("Review duplicates and choose actions"),
-			summaryLabel,
-			countLabel,
-			toolbarScroll,
-			paginationBar,
-		),
-		bottomBar,
-		nil,
-		nil,
-		scroll,
+	center := container.NewVBox(
+		titleLbl,
+		overviewCard,
+		actionsCard,
+		tableCard,
+		pageRow,
 	)
-	win.SetContent(content)
+
+	bg := canvas.NewRectangle(resultsBgPage)
+	root := container.NewMax(bg, container.NewPadded(center))
+
+	out := container.NewBorder(
+		nil,
+		container.NewPadded(bottomBar),
+		nil,
+		nil,
+		root,
+	)
 	rebuildPage()
+	return out
 }
