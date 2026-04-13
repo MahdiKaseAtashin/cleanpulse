@@ -151,6 +151,41 @@ Run:
 ./bin/duplica-scan-gui
 ```
 
+### Windows GUI Prerequisites
+
+Fyne desktop builds on Windows require CGO and a working C compiler toolchain.
+
+1. Install MSYS2 and the `mingw-w64-x86_64-gcc` toolchain.
+2. Add `C:\msys64\mingw64\bin` to `PATH`.
+3. Enable CGO and build with the `gui` tag:
+
+```powershell
+$env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+$env:CGO_ENABLED = "1"
+gcc --version
+go build -tags gui -o .\bin\duplica-scan-gui.exe .\src\cmd\duplica-scan-gui
+```
+
+If you see `build constraints exclude all Go files` for `go-gl`, verify `CGO_ENABLED=1` and that `gcc` resolves in `PATH`.
+
+### macOS/Linux GUI Prerequisites
+
+Fyne desktop builds on macOS/Linux also require CGO and native GUI/OpenGL development libraries.
+
+- Ensure `CGO_ENABLED=1`.
+- Ensure a C compiler is installed (`clang` on macOS, `gcc` on Linux).
+- Install platform libraries typically required by GLFW/OpenGL builds.
+
+Example checks:
+
+```bash
+go env CGO_ENABLED
+cc --version
+go build -tags gui -o ./bin/duplica-scan-gui ./src/cmd/duplica-scan-gui
+```
+
+On Linux, if build errors mention missing X11/OpenGL/GLFW headers, install your distro's development packages for OpenGL and X11/Wayland (for example `libgl1-mesa-dev`, `xorg-dev`, or equivalents).
+
 Note: the GUI command is gated behind the `gui` build tag so CLI-only environments can still run `go test ./...` without desktop OpenGL toolchain requirements.
 
 ## Development

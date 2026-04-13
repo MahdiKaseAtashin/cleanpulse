@@ -17,6 +17,7 @@ import (
 	"duplica-scan/src/internal/report"
 	"duplica-scan/src/internal/scanner"
 	"duplica-scan/src/internal/selection"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
