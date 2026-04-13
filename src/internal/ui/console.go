@@ -67,6 +67,7 @@ func (c *Console) PrintDuplicateGroups(groups []duplicates.Group) {
 
 func (c *Console) CollectDeletionSelection(groups []duplicates.Group) []string {
 	selected := make([]string, 0, 128)
+	seenPaths := make(map[string]struct{}, 256)
 
 	fmt.Println()
 	fmt.Println("Selection mode: for each group, enter file numbers to delete (comma-separated).")
@@ -97,7 +98,12 @@ func (c *Console) CollectDeletionSelection(groups []duplicates.Group) []string {
 				fmt.Printf("Ignoring invalid index: %q\n", part)
 				continue
 			}
-			selected = append(selected, group.Files[n-1].Path)
+			path := group.Files[n-1].Path
+			if _, exists := seenPaths[path]; exists {
+				continue
+			}
+			seenPaths[path] = struct{}{}
+			selected = append(selected, path)
 		}
 	}
 
