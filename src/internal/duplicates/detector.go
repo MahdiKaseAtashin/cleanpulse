@@ -2,6 +2,8 @@ package duplicates
 
 import (
 	"log"
+	"sync"
+	"sync/atomic"
 
 	"duplica-scan/src/internal/model"
 )
@@ -23,61 +25,110 @@ type Progress struct {
 type HashFunc func(path string) (string, error)
 type ProgressCallback func(Progress)
 
+type DetectOptions struct {
+	HashWorkers int
+}
+
 // Detect finds duplicate files by grouping by size first, then by hash.
 func Detect(files []model.FileMeta, hashFn HashFunc, onProgress ProgressCallback) ([]Group, []error) {
+	return DetectWithOptions(files, hashFn, onProgress, DetectOptions{HashWorkers: 1})
+}
+
+// DetectWithOptions finds duplicate files using a bounded hashing worker pool.
+func DetectWithOptions(files []model.FileMeta, hashFn HashFunc, onProgress ProgressCallback, options DetectOptions) ([]Group, []error) {
+	if options.HashWorkers < 1 {
+		options.HashWorkers = 1
+	}
+
 	sizeBuckets := make(map[int64][]model.FileMeta, len(files))
 	for _, file := range files {
 		sizeBuckets[file.Size] = append(sizeBuckets[file.Size], file)
 	}
 
+	candidates := make([]model.FileMeta, 0, len(files))
 	totalToHash := int64(0)
 	for _, bucket := range sizeBuckets {
 		if len(bucket) > 1 {
+			candidates = append(candidates, bucket...)
 			totalToHash += int64(len(bucket))
 		}
 	}
 
+	if len(candidates) == 0 {
+		return []Group{}, []error{}
+	}
+
+	type hashResult struct {
+		file model.FileMeta
+		hash string
+		err  error
+	}
+
+	jobs := make(chan model.FileMeta, options.HashWorkers*2)
+	results := make(chan hashResult, options.HashWorkers*2)
+
+	var wg sync.WaitGroup
+	for i := 0; i < options.HashWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range jobs {
+				hash, err := hashFn(file.Path)
+				results <- hashResult{file: file, hash: hash, err: err}
+			}
+		}()
+	}
+
+	go func() {
+		for _, file := range candidates {
+			jobs <- file
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+
 	hashedFiles := int64(0)
 	allErrors := make([]error, 0, 32)
-	result := make([]Group, 0, 16)
+	groupedBySizeAndHash := make(map[int64]map[string][]model.FileMeta, len(sizeBuckets))
 
-	for size, bucket := range sizeBuckets {
-		if len(bucket) < 2 {
+	for result := range results {
+		newCount := atomic.AddInt64(&hashedFiles, 1)
+		if onProgress != nil {
+			onProgress(Progress{
+				HashedFiles: newCount,
+				TotalToHash: totalToHash,
+				CurrentPath: result.file.Path,
+			})
+		}
+
+		if result.err != nil {
+			allErrors = append(allErrors, result.err)
+			log.Printf("hashing error on %s: %v", result.file.Path, result.err)
 			continue
 		}
 
-		hashBuckets := make(map[string][]model.FileMeta, len(bucket))
-		for _, file := range bucket {
-			hash, err := hashFn(file.Path)
-			hashedFiles++
-
-			if onProgress != nil {
-				onProgress(Progress{
-					HashedFiles: hashedFiles,
-					TotalToHash: totalToHash,
-					CurrentPath: file.Path,
-				})
-			}
-
-			if err != nil {
-				allErrors = append(allErrors, err)
-				log.Printf("hashing error on %s: %v", file.Path, err)
-				continue
-			}
-			hashBuckets[hash] = append(hashBuckets[hash], file)
+		byHash, ok := groupedBySizeAndHash[result.file.Size]
+		if !ok {
+			byHash = make(map[string][]model.FileMeta)
+			groupedBySizeAndHash[result.file.Size] = byHash
 		}
+		byHash[result.hash] = append(byHash[result.hash], result.file)
+	}
 
-		for hash, hashBucket := range hashBuckets {
-			if len(hashBucket) < 2 {
+	finalGroups := make([]Group, 0, 16)
+	for size, byHash := range groupedBySizeAndHash {
+		for hash, filesWithSameHash := range byHash {
+			if len(filesWithSameHash) < 2 {
 				continue
 			}
-			result = append(result, Group{
+			finalGroups = append(finalGroups, Group{
 				Hash:  hash,
 				Size:  size,
-				Files: hashBucket,
+				Files: filesWithSameHash,
 			})
 		}
 	}
 
-	return result, allErrors
+	return finalGroups, allErrors
 }

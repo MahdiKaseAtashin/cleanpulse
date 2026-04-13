@@ -151,5 +151,6 @@ func trimPath(path string, max int) string {
 	if max < 8 {
 		return path[:max]
 	}
-	return "..." + strings.TrimPrefix(path[len(path)-max+3:], `\`)
+	// Keep this separator-agnostic for Windows, macOS, and Linux paths.
+	return "..." + strings.TrimLeft(path[len(path)-max+3:], `/\`)
 }

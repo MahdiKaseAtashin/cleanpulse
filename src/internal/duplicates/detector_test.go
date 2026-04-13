@@ -39,3 +39,44 @@ func TestDetectGroupsBySizeAndHash(t *testing.T) {
 		t.Fatalf("expected two files in group, got %d", len(groups[0].Files))
 	}
 }
+
+func TestDetectWithOptionsUsesWorkerPool(t *testing.T) {
+	files := []model.FileMeta{
+		{Name: "a", Path: "a", Size: 10},
+		{Name: "b", Path: "b", Size: 10},
+	}
+
+	calls := 0
+	groups, errs := DetectWithOptions(files, func(path string) (string, error) {
+		calls++
+		return "same", nil
+	}, nil, DetectOptions{HashWorkers: 4})
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 hash calls, got %d", calls)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected one group, got %d", len(groups))
+	}
+}
+
+func TestDetectWithOptionsInvalidWorkersDefaultsToOne(t *testing.T) {
+	files := []model.FileMeta{
+		{Name: "x", Path: "x", Size: 10},
+		{Name: "y", Path: "y", Size: 10},
+	}
+
+	groups, errs := DetectWithOptions(files, func(path string) (string, error) {
+		return "same", nil
+	}, nil, DetectOptions{HashWorkers: 0})
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected one group, got %d", len(groups))
+	}
+}

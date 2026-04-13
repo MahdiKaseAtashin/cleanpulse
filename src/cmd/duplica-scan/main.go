@@ -5,40 +5,89 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"duplica-scan/src/internal/cleanup"
 	"duplica-scan/src/internal/duplicates"
 	"duplica-scan/src/internal/hash"
+	"duplica-scan/src/internal/report"
 	"duplica-scan/src/internal/scanner"
+	"duplica-scan/src/internal/selection"
 	"duplica-scan/src/internal/ui"
 )
 
 func main() {
-	rootPath := flag.String("path", "", "Drive or directory to scan (required)")
+	rootPath := flag.String("path", "", "Directory (or drive root) to scan (required)")
 	dryRun := flag.Bool("dry-run", true, "Dry run mode: report duplicates without deletion")
+	hashWorkers := flag.Int("hash-workers", runtime.NumCPU(), "Number of concurrent hashing workers")
+	excludeExts := flag.String("exclude-exts", "", "Comma-separated file extensions to skip (example: .log,.tmp)")
+	excludeDirs := flag.String("exclude-dirs", "", "Comma-separated directory names to skip (example: node_modules,.git)")
+	minSizeBytes := flag.Int64("min-size-bytes", 0, "Minimum file size in bytes to include (0 disables)")
+	maxSizeBytes := flag.Int64("max-size-bytes", 0, "Maximum file size in bytes to include (0 disables)")
+	exportFormat := flag.String("export-format", "", "Export format: csv or json (optional)")
+	exportPath := flag.String("export-path", "", "Output path for exported report (optional)")
+	autoSelect := flag.String("auto-select", "", "Auto deletion selection strategy: newest or oldest (optional)")
 	flag.Parse()
 
 	if *rootPath == "" {
 		fmt.Println("Usage: duplica-scan -path <directory_or_drive_root> [-dry-run=true]")
 		os.Exit(1)
 	}
+	strategy, err := selection.NormalizeStrategy(*autoSelect)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	console := ui.NewConsole()
 	start := time.Now()
+	filterOptions := scanner.ScanOptions{
+		ExcludeExtensions: parseExtensions(*excludeExts),
+		ExcludeDirs:       parseNames(*excludeDirs),
+		MinSizeBytes:      *minSizeBytes,
+		MaxSizeBytes:      *maxSizeBytes,
+	}
+
+	if filterOptions.MaxSizeBytes > 0 && filterOptions.MinSizeBytes > filterOptions.MaxSizeBytes {
+		log.Fatalf("invalid size filter: min-size-bytes (%d) cannot be greater than max-size-bytes (%d)", filterOptions.MinSizeBytes, filterOptions.MaxSizeBytes)
+	}
 
 	fmt.Printf("Scanning: %s\n", *rootPath)
-	scanSummary, err := scanner.Scan(*rootPath, console.OnScanProgress)
+	scanSummary, err := scanner.ScanWithOptions(*rootPath, console.OnScanProgress, filterOptions)
 	if err != nil {
 		log.Fatalf("scan failed: %v", err)
 	}
 	fmt.Println()
 
-	fmt.Printf("Collected %d files. Hashing candidate files...\n", len(scanSummary.Files))
-	groups, hashErrors := duplicates.Detect(scanSummary.Files, hash.SHA256File, console.OnHashProgress)
+	if *hashWorkers < 1 {
+		log.Printf("invalid hash-workers value %d; defaulting to 1", *hashWorkers)
+		*hashWorkers = 1
+	}
+
+	fmt.Printf("Collected %d files. Hashing candidate files with %d worker(s)...\n", len(scanSummary.Files), *hashWorkers)
+	groups, hashErrors := duplicates.DetectWithOptions(
+		scanSummary.Files,
+		hash.SHA256File,
+		console.OnHashProgress,
+		duplicates.DetectOptions{HashWorkers: *hashWorkers},
+	)
 	fmt.Println()
 
 	console.PrintDuplicateGroups(groups)
+
+	if strings.TrimSpace(*exportFormat) != "" {
+		path := strings.TrimSpace(*exportPath)
+		if path == "" {
+			path = defaultExportPath(*exportFormat)
+		}
+		if err := report.Export(groups, *exportFormat, path); err != nil {
+			log.Printf("report export failed: %v", err)
+		} else {
+			fmt.Printf("Report exported: %s\n", path)
+		}
+	}
 
 	fmt.Println()
 	fmt.Printf("Dry run mode: %t\n", *dryRun)
@@ -50,7 +99,13 @@ func main() {
 		return
 	}
 
-	selected := console.CollectDeletionSelection(groups)
+	selected := make([]string, 0, 128)
+	if strategy == selection.StrategyManual {
+		selected = console.CollectDeletionSelection(groups)
+	} else {
+		selected = selection.AutoSelect(groups, strategy)
+		fmt.Printf("Auto-select strategy %q picked %d file(s) for deletion.\n", strategy, len(selected))
+	}
 	if len(selected) == 0 {
 		fmt.Println("No files selected for deletion.")
 		return
@@ -70,4 +125,51 @@ func main() {
 		}
 	}
 	console.PrintDeletionResults(len(results), failures, *dryRun)
+}
+
+func defaultExportPath(format string) string {
+	base := fmt.Sprintf("duplicate-report-%s", time.Now().Format("20060102-150405"))
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case report.FormatCSV:
+		return filepath.Join(".", "reports", base+".csv")
+	case report.FormatJSON:
+		return filepath.Join(".", "reports", base+".json")
+	default:
+		return filepath.Join(".", "reports", base+".txt")
+	}
+}
+
+func parseExtensions(raw string) map[string]struct{} {
+	return parseCSVSet(raw, func(v string) string {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v == "" {
+			return ""
+		}
+		if !strings.HasPrefix(v, ".") {
+			return "." + v
+		}
+		return v
+	})
+}
+
+func parseNames(raw string) map[string]struct{} {
+	return parseCSVSet(raw, func(v string) string {
+		return strings.ToLower(strings.TrimSpace(v))
+	})
+}
+
+func parseCSVSet(raw string, normalizer func(string) string) map[string]struct{} {
+	result := make(map[string]struct{})
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return result
+	}
+	for _, part := range strings.Split(raw, ",") {
+		value := normalizer(part)
+		if value == "" {
+			continue
+		}
+		result[value] = struct{}{}
+	}
+	return result
 }
