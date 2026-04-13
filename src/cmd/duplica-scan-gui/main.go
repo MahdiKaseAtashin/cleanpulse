@@ -1,12 +1,14 @@
-//go:build gui
-// +build gui
+//go:build gui && cgo
+// +build gui,cgo
 
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,9 +27,15 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+//go:embed logo.png
+var appLogoPNG []byte
+
 func main() {
 	a := app.New()
+	logoResource := fyne.NewStaticResource("duplica-scan-logo.png", appLogoPNG)
+	a.SetIcon(logoResource)
 	w := a.NewWindow("Duplica Scan")
+	w.SetIcon(logoResource)
 	w.Resize(fyne.NewSize(980, 760))
 
 	pathEntry := widget.NewEntry()
@@ -174,43 +182,24 @@ func main() {
 			appendOutput("")
 			appendOutput(renderGroups(groups))
 
+			initialSelection := make(map[string]struct{})
+			if strategy != selection.StrategyManual {
+				for _, path := range selection.AutoSelect(groups, strategy) {
+					initialSelection[path] = struct{}{}
+				}
+				appendOutput(fmt.Sprintf("Auto-select (%s) picked %d file(s).", strategy, len(initialSelection)))
+			}
+
+			fyne.Do(func() {
+				showResultsWindow(a, groups, dryRunCheck.Checked, initialSelection, appendOutput)
+			})
+
 			if exportFormat != "" {
 				if err := report.Export(groups, exportFormat, exportPath); err != nil {
 					appendOutput(fmt.Sprintf("Export failed: %v", err))
 				} else {
 					appendOutput(fmt.Sprintf("Report exported: %s", exportPath))
 				}
-			}
-
-			selected := make([]string, 0)
-			if strategy != selection.StrategyManual {
-				selected = selection.AutoSelect(groups, strategy)
-				appendOutput(fmt.Sprintf("Auto-select (%s) picked %d file(s).", strategy, len(selected)))
-			}
-
-			if !dryRunCheck.Checked && len(selected) > 0 {
-				fyne.Do(func() {
-					dialog.NewConfirm(
-						"Confirm Deletion",
-						fmt.Sprintf("Delete %d selected duplicate file(s)?", len(selected)),
-						func(ok bool) {
-							if !ok {
-								appendOutput("Deletion canceled.")
-								return
-							}
-							results := cleanup.DeleteFiles(selected, false)
-							failures := 0
-							for _, r := range results {
-								if r.Err != nil {
-									failures++
-									appendOutput(fmt.Sprintf("Failed: %s (%v)", r.Path, r.Err))
-								}
-							}
-							appendOutput(fmt.Sprintf("Deletion complete. Success: %d, Failed: %d", len(results)-failures, failures))
-						},
-						w,
-					).Show()
-				})
 			}
 
 			fyne.Do(func() {
@@ -320,4 +309,163 @@ func renderGroups(groups []duplicates.Group) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func showResultsWindow(
+	a fyne.App,
+	groups []duplicates.Group,
+	dryRun bool,
+	initialSelection map[string]struct{},
+	appendOutput func(string),
+) {
+	win := a.NewWindow("Scan Results")
+	win.Resize(fyne.NewSize(960, 720))
+
+	selected := make(map[string]struct{}, 512)
+	for p := range initialSelection {
+		selected[p] = struct{}{}
+	}
+	checkByPath := make(map[string]*widget.Check, 512)
+
+	countLabel := widget.NewLabel("")
+	updateCount := func() {
+		countLabel.SetText(fmt.Sprintf("Selected files: %d", len(selected)))
+	}
+
+	sortedGroups := append([]duplicates.Group(nil), groups...)
+	sort.Slice(sortedGroups, func(i, j int) bool {
+		if sortedGroups[i].Size == sortedGroups[j].Size {
+			return sortedGroups[i].Hash < sortedGroups[j].Hash
+		}
+		return sortedGroups[i].Size > sortedGroups[j].Size
+	})
+
+	groupRows := make([]fyne.CanvasObject, 0, len(sortedGroups))
+	for i, group := range sortedGroups {
+		header := widget.NewLabel(fmt.Sprintf("Group %d | size: %d bytes | hash: %s", i+1, group.Size, group.Hash))
+		fileRows := make([]fyne.CanvasObject, 0, len(group.Files))
+		for _, file := range group.Files {
+			path := file.Path
+			check := widget.NewCheck(
+				fmt.Sprintf("%s | %s | %d bytes", file.Name, path, file.Size),
+				func(checked bool) {
+					if checked {
+						selected[path] = struct{}{}
+					} else {
+						delete(selected, path)
+					}
+					updateCount()
+				},
+			)
+			if _, ok := selected[path]; ok {
+				check.SetChecked(true)
+			}
+			checkByPath[path] = check
+			fileRows = append(fileRows, check)
+		}
+		groupRows = append(groupRows, container.NewVBox(header, container.NewVBox(fileRows...)))
+	}
+
+	setSelection := func(paths []string) {
+		selected = make(map[string]struct{}, len(paths))
+		for _, check := range checkByPath {
+			check.SetChecked(false)
+		}
+		for _, path := range paths {
+			selected[path] = struct{}{}
+			if check, ok := checkByPath[path]; ok {
+				check.SetChecked(true)
+			}
+		}
+		updateCount()
+	}
+
+	selectAllBtn := widget.NewButton("Select All", func() {
+		paths := make([]string, 0, len(checkByPath))
+		for path := range checkByPath {
+			paths = append(paths, path)
+		}
+		setSelection(paths)
+	})
+
+	clearBtn := widget.NewButton("Clear", func() {
+		setSelection(nil)
+	})
+
+	keepNewestBtn := widget.NewButton("Keep Newest", func() {
+		setSelection(selection.AutoSelect(groups, selection.StrategyNewest))
+	})
+
+	keepOldestBtn := widget.NewButton("Keep Oldest", func() {
+		setSelection(selection.AutoSelect(groups, selection.StrategyOldest))
+	})
+
+	deleteBtn := widget.NewButton("Delete Selected", func() {
+		if len(selected) == 0 {
+			dialog.ShowInformation("No selection", "Select at least one file.", win)
+			return
+		}
+		paths := make([]string, 0, len(selected))
+		for p := range selected {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+
+		actionText := "delete"
+		if dryRun {
+			actionText = "simulate deletion for"
+		}
+		dialog.NewConfirm(
+			"Confirm Action",
+			fmt.Sprintf("Proceed to %s %d selected file(s)?", actionText, len(paths)),
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				results := cleanup.DeleteFiles(paths, dryRun)
+				failures := 0
+				for _, r := range results {
+					if r.Err != nil {
+						failures++
+						appendOutput(fmt.Sprintf("Failed: %s (%v)", r.Path, r.Err))
+					}
+				}
+				appendOutput(fmt.Sprintf("Result action completed. Success: %d, Failed: %d", len(results)-failures, failures))
+				dialog.ShowInformation("Action complete", fmt.Sprintf("Success: %d, Failed: %d", len(results)-failures, failures), win)
+			},
+			win,
+		).Show()
+	})
+
+	exportCSVBtn := widget.NewButton("Export CSV", func() {
+		path := defaultExportPath(report.FormatCSV)
+		if err := report.Export(groups, report.FormatCSV, path); err != nil {
+			dialog.ShowError(err, win)
+			return
+		}
+		appendOutput("CSV exported: " + path)
+		dialog.ShowInformation("Export complete", "CSV exported to:\n"+path, win)
+	})
+
+	exportJSONBtn := widget.NewButton("Export JSON", func() {
+		path := defaultExportPath(report.FormatJSON)
+		if err := report.Export(groups, report.FormatJSON, path); err != nil {
+			dialog.ShowError(err, win)
+			return
+		}
+		appendOutput("JSON exported: " + path)
+		dialog.ShowInformation("Export complete", "JSON exported to:\n"+path, win)
+	})
+
+	updateCount()
+	toolbar := container.NewHBox(selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn, deleteBtn, exportCSVBtn, exportJSONBtn)
+	content := container.NewBorder(
+		container.NewVBox(widget.NewLabel("Review duplicates and choose actions"), countLabel, toolbar),
+		nil,
+		nil,
+		nil,
+		container.NewVScroll(container.NewVBox(groupRows...)),
+	)
+	win.SetContent(content)
+	win.Show()
 }

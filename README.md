@@ -1,5 +1,7 @@
 # Duplica Scan
 
+![Duplica Scan Logo](assets/duplica-scan-logo.png)
+
 Cross-platform duplicate file scanner written in Go (Windows, macOS, Linux).
 
 ## Features
@@ -63,6 +65,18 @@ go build -o ./bin/duplica-scan ./src/cmd/duplica-scan
 
 ```bash
 go build -tags gui -o ./bin/duplica-scan-gui ./src/cmd/duplica-scan-gui
+```
+
+On Windows, build with `-H=windowsgui` to prevent a console window:
+
+```powershell
+go build -tags gui -ldflags "-H=windowsgui" -o .\bin\duplica-scan-gui.exe .\src\cmd\duplica-scan-gui
+```
+
+Or run the helper script:
+
+```powershell
+.\scripts\build-gui-windows.ps1
 ```
 
 ### Scan (Dry Run) - Windows
