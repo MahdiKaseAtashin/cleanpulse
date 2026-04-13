@@ -25,6 +25,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -325,6 +326,11 @@ func renderGroups(groups []duplicates.Group) string {
 	return b.String()
 }
 
+const (
+	resultsGroupsPerPage    = 12
+	resultsMaxFilesPerGroup = 80
+)
+
 func showResultsWindow(
 	a fyne.App,
 	groups []duplicates.Group,
@@ -332,9 +338,6 @@ func showResultsWindow(
 	initialSelection map[string]struct{},
 	appendOutput func(string),
 ) {
-	win := a.NewWindow("Scan Results")
-	win.Resize(fyne.NewSize(960, 720))
-
 	totalFiles := 0
 	totalReclaimable := int64(0)
 	for _, g := range groups {
@@ -344,13 +347,6 @@ func showResultsWindow(
 		}
 	}
 
-	selected := make(map[string]struct{}, 512)
-	for p := range initialSelection {
-		selected[p] = struct{}{}
-	}
-	checkByPath := make(map[string]*widget.Check, 512)
-
-	countLabel := widget.NewLabel("")
 	summaryLabel := widget.NewLabel(
 		fmt.Sprintf(
 			"Groups: %d | Candidate files: %d | Estimated reclaimable: %s | Mode: %s",
@@ -360,64 +356,196 @@ func showResultsWindow(
 			map[bool]string{true: "Dry Run", false: "Delete"}[dryRun],
 		),
 	)
+
+	win := a.NewWindow("Scan Results")
+	win.Resize(fyne.NewSize(960, 720))
+
+	loading := container.NewVBox(
+		widget.NewLabel("Preparing the result list…"),
+		widget.NewProgressBarInfinite(),
+	)
+	win.SetContent(container.NewBorder(
+		container.NewVBox(
+			widget.NewLabel("Review duplicates and choose actions"),
+			summaryLabel,
+		),
+		nil, nil, nil,
+		loading,
+	))
+	win.Show()
+
+	go func() {
+		sorted := append([]duplicates.Group(nil), groups...)
+		sort.Slice(sorted, func(i, j int) bool {
+			if sorted[i].Size == sorted[j].Size {
+				return sorted[i].Hash < sorted[j].Hash
+			}
+			return sorted[i].Size > sorted[j].Size
+		})
+
+		fyne.Do(func() {
+			mountResultsWindowContent(win, groups, sorted, dryRun, initialSelection, appendOutput)
+		})
+	}()
+}
+
+func mountResultsWindowContent(
+	win fyne.Window,
+	originalGroups []duplicates.Group,
+	sortedGroups []duplicates.Group,
+	dryRun bool,
+	initialSelection map[string]struct{},
+	appendOutput func(string),
+) {
+	selected := make(map[string]struct{}, 512)
+	for p := range initialSelection {
+		selected[p] = struct{}{}
+	}
+	checkByPath := make(map[string]*widget.Check, resultsGroupsPerPage*resultsMaxFilesPerGroup)
+
+	totalFiles := 0
+	totalReclaimable := int64(0)
+	for _, g := range originalGroups {
+		totalFiles += len(g.Files)
+		if len(g.Files) > 1 {
+			totalReclaimable += int64(len(g.Files)-1) * g.Size
+		}
+	}
+
+	countLabel := widget.NewLabel("")
+	summaryLabel := widget.NewLabel(
+		fmt.Sprintf(
+			"Groups: %d | Candidate files: %d | Estimated reclaimable: %s | Mode: %s",
+			len(originalGroups),
+			totalFiles,
+			formatBytes(totalReclaimable),
+			map[bool]string{true: "Dry Run", false: "Delete"}[dryRun],
+		),
+	)
+
 	updateCount := func() {
 		countLabel.SetText(fmt.Sprintf("Selected files: %d", len(selected)))
 	}
 
-	sortedGroups := append([]duplicates.Group(nil), groups...)
-	sort.Slice(sortedGroups, func(i, j int) bool {
-		if sortedGroups[i].Size == sortedGroups[j].Size {
-			return sortedGroups[i].Hash < sortedGroups[j].Hash
-		}
-		return sortedGroups[i].Size > sortedGroups[j].Size
-	})
-
-	groupRows := make([]fyne.CanvasObject, 0, len(sortedGroups))
-	for i, group := range sortedGroups {
-		header := widget.NewLabel(fmt.Sprintf("Group %d | size: %d bytes | hash: %s", i+1, group.Size, group.Hash))
-		fileRows := make([]fyne.CanvasObject, 0, len(group.Files))
-		for _, file := range group.Files {
-			path := file.Path
-			check := widget.NewCheck(
-				fmt.Sprintf("%s | %s | %d bytes", file.Name, path, file.Size),
-				func(checked bool) {
-					if checked {
-						selected[path] = struct{}{}
-					} else {
-						delete(selected, path)
-					}
-					updateCount()
-				},
-			)
-			if _, ok := selected[path]; ok {
-				check.SetChecked(true)
+	allPathsFromSorted := func() []string {
+		paths := make([]string, 0, totalFiles)
+		for _, g := range sortedGroups {
+			for _, f := range g.Files {
+				paths = append(paths, f.Path)
 			}
-			checkByPath[path] = check
-			fileRows = append(fileRows, check)
 		}
-		groupRows = append(groupRows, container.NewVBox(header, container.NewVBox(fileRows...)))
+		return paths
 	}
 
-	setSelection := func(paths []string) {
-		selected = make(map[string]struct{}, len(paths))
-		for _, check := range checkByPath {
-			check.SetChecked(false)
+	currentPage := 0
+	totalPages := (len(sortedGroups) + resultsGroupsPerPage - 1) / resultsGroupsPerPage
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	pageLabel := widget.NewLabel("")
+	prevBtn := widget.NewButton("Previous", func() {})
+	nextBtn := widget.NewButton("Next", func() {})
+
+	scroll := container.NewVScroll(widget.NewLabel(""))
+
+	rebuildPage := func() {
+		checkByPath = make(map[string]*widget.Check, resultsGroupsPerPage*resultsMaxFilesPerGroup)
+
+		start := currentPage * resultsGroupsPerPage
+		end := start + resultsGroupsPerPage
+		if end > len(sortedGroups) {
+			end = len(sortedGroups)
 		}
-		for _, path := range paths {
-			selected[path] = struct{}{}
-			if check, ok := checkByPath[path]; ok {
-				check.SetChecked(true)
+
+		pageLabel.SetText(fmt.Sprintf("Page %d / %d", currentPage+1, totalPages))
+		prevBtn.Disable()
+		nextBtn.Disable()
+		if currentPage > 0 {
+			prevBtn.Enable()
+		}
+		if currentPage < totalPages-1 {
+			nextBtn.Enable()
+		}
+
+		if len(sortedGroups) == 0 {
+			scroll.Content = widget.NewLabel("No duplicates found.")
+			scroll.Refresh()
+			return
+		}
+
+		totalGroups := len(sortedGroups)
+		groupRows := make([]fyne.CanvasObject, 0, end-start)
+		globalIdx := start
+		for _, group := range sortedGroups[start:end] {
+			header := widget.NewLabel(fmt.Sprintf(
+				"Group %d of %d | size: %d bytes | hash: %s",
+				globalIdx+1, totalGroups, group.Size, group.Hash,
+			))
+			globalIdx++
+
+			files := group.Files
+			totalFilesInGroup := len(files)
+			overflow := 0
+			if len(files) > resultsMaxFilesPerGroup {
+				overflow = len(files) - resultsMaxFilesPerGroup
+				files = files[:resultsMaxFilesPerGroup]
 			}
+
+			fileRows := make([]fyne.CanvasObject, 0, len(files)+1)
+			for fi, file := range files {
+				path := file.Path
+				pathCopy := path
+				fileNum := fi + 1
+				check := widget.NewCheck(
+					fmt.Sprintf("%d. %s | %s | %d bytes", fileNum, file.Name, path, file.Size),
+					func(checked bool) {
+						if checked {
+							selected[pathCopy] = struct{}{}
+						} else {
+							delete(selected, pathCopy)
+						}
+						updateCount()
+					},
+				)
+				if _, ok := selected[path]; ok {
+					check.SetChecked(true)
+				}
+				checkByPath[path] = check
+				fileRows = append(fileRows, check)
+			}
+			if overflow > 0 {
+				fileRows = append(fileRows, widget.NewLabel(fmt.Sprintf(
+					"… files %d–%d not shown (%d more; %d file(s) in this group — use Export for the full list).",
+					resultsMaxFilesPerGroup+1, totalFilesInGroup, overflow, totalFilesInGroup,
+				)))
+			}
+			groupRows = append(groupRows, container.NewVBox(header, container.NewVBox(fileRows...)))
+		}
+
+		scroll.Content = container.NewVBox(groupRows...)
+		scroll.ScrollToTop()
+		scroll.Refresh()
+	}
+
+	syncVisibleChecks := func() {
+		for path, check := range checkByPath {
+			_, ok := selected[path]
+			check.SetChecked(ok)
 		}
 		updateCount()
 	}
 
-	selectAllBtn := widget.NewButton("Select All", func() {
-		paths := make([]string, 0, len(checkByPath))
-		for path := range checkByPath {
-			paths = append(paths, path)
+	setSelection := func(paths []string) {
+		selected = make(map[string]struct{}, len(paths))
+		for _, p := range paths {
+			selected[p] = struct{}{}
 		}
-		setSelection(paths)
+		syncVisibleChecks()
+	}
+
+	selectAllBtn := widget.NewButton("Select All", func() {
+		setSelection(allPathsFromSorted())
 	})
 
 	clearBtn := widget.NewButton("Clear", func() {
@@ -425,18 +553,19 @@ func showResultsWindow(
 	})
 
 	keepNewestBtn := widget.NewButton("Keep Newest", func() {
-		setSelection(selection.AutoSelect(groups, selection.StrategyNewest))
+		setSelection(selection.AutoSelect(originalGroups, selection.StrategyNewest))
 	})
 
 	keepOldestBtn := widget.NewButton("Keep Oldest", func() {
-		setSelection(selection.AutoSelect(groups, selection.StrategyOldest))
+		setSelection(selection.AutoSelect(originalGroups, selection.StrategyOldest))
 	})
 
-	deleteLabel := "Delete Selected"
+	deleteLabel := "Delete"
 	if dryRun {
-		deleteLabel = "Simulate Selected"
+		deleteLabel = "Simulate delete"
 	}
-	deleteBtn := widget.NewButton(deleteLabel, func() {
+
+	confirmAndDelete := func() {
 		if len(selected) == 0 {
 			dialog.ShowInformation("No selection", "Select at least one file.", win)
 			return
@@ -447,13 +576,23 @@ func showResultsWindow(
 		}
 		sort.Strings(paths)
 
-		actionText := "delete"
+		var title, message string
 		if dryRun {
-			actionText = "simulate deletion for"
+			title = "Simulate deletion?"
+			message = fmt.Sprintf(
+				"Are you sure you want to simulate deletion for %d selected file(s)? No files will be removed.",
+				len(paths),
+			)
+		} else {
+			title = "Are you sure?"
+			message = fmt.Sprintf(
+				"This will permanently delete %d selected file(s). This cannot be undone.",
+				len(paths),
+			)
 		}
 		dialog.NewConfirm(
-			"Confirm Action",
-			fmt.Sprintf("Proceed to %s %d selected file(s)?", actionText, len(paths)),
+			title,
+			message,
 			func(ok bool) {
 				if !ok {
 					return
@@ -471,11 +610,25 @@ func showResultsWindow(
 			},
 			win,
 		).Show()
-	})
+	}
+
+	deleteBtn := widget.NewButton(deleteLabel, confirmAndDelete)
+	if dryRun {
+		deleteBtn.Importance = widget.MediumImportance
+	} else {
+		deleteBtn.Importance = widget.DangerImportance
+	}
+
+	bottomDeleteBtn := widget.NewButton(deleteLabel, confirmAndDelete)
+	if dryRun {
+		bottomDeleteBtn.Importance = widget.MediumImportance
+	} else {
+		bottomDeleteBtn.Importance = widget.DangerImportance
+	}
 
 	exportCSVBtn := widget.NewButton("Export CSV", func() {
 		path := defaultExportPath(report.FormatCSV)
-		if err := report.Export(groups, report.FormatCSV, path); err != nil {
+		if err := report.Export(originalGroups, report.FormatCSV, path); err != nil {
 			dialog.ShowError(err, win)
 			return
 		}
@@ -485,7 +638,7 @@ func showResultsWindow(
 
 	exportJSONBtn := widget.NewButton("Export JSON", func() {
 		path := defaultExportPath(report.FormatJSON)
-		if err := report.Export(groups, report.FormatJSON, path); err != nil {
+		if err := report.Export(originalGroups, report.FormatJSON, path); err != nil {
 			dialog.ShowError(err, win)
 			return
 		}
@@ -493,15 +646,46 @@ func showResultsWindow(
 		dialog.ShowInformation("Export complete", "JSON exported to:\n"+path, win)
 	})
 
+	prevBtn.OnTapped = func() {
+		if currentPage > 0 {
+			currentPage--
+			rebuildPage()
+		}
+	}
+	nextBtn.OnTapped = func() {
+		if currentPage < totalPages-1 {
+			currentPage++
+			rebuildPage()
+		}
+	}
+
 	updateCount()
-	toolbar := container.NewHBox(selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn, deleteBtn, exportCSVBtn, exportJSONBtn)
+	toolbar := container.NewHBox(
+		selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn,
+		deleteBtn, exportCSVBtn, exportJSONBtn,
+	)
+	toolbarScroll := container.NewHScroll(toolbar)
+
+	paginationBar := container.NewHBox(prevBtn, pageLabel, nextBtn)
+
+	cancelBtn := widget.NewButton("Cancel", func() {
+		win.Close()
+	})
+	bottomBar := container.NewHBox(layout.NewSpacer(), bottomDeleteBtn, cancelBtn)
+
 	content := container.NewBorder(
-		container.NewVBox(widget.NewLabel("Review duplicates and choose actions"), summaryLabel, countLabel, toolbar),
+		container.NewVBox(
+			widget.NewLabel("Review duplicates and choose actions"),
+			summaryLabel,
+			countLabel,
+			toolbarScroll,
+			paginationBar,
+		),
+		bottomBar,
 		nil,
 		nil,
-		nil,
-		container.NewVScroll(container.NewVBox(groupRows...)),
+		scroll,
 	)
 	win.SetContent(content)
-	win.Show()
+	rebuildPage()
 }

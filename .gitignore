@@ -1,5 +1,6 @@
 .idea/
 .cursor/
+.gocache-build/
 bin/
 dist/
 coverage.out
