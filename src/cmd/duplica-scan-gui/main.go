@@ -6,7 +6,6 @@ package main
 import (
 	_ "embed"
 	"fmt"
-	"image/color"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,7 +23,6 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -413,14 +411,6 @@ const (
 	resultsMaxFilesPerGroup = 80
 )
 
-// Light dashboard-style palette for the scan results view (inspired by soft UI cards).
-var (
-	resultsBgPage       = color.NRGBA{R: 245, G: 247, B: 250, A: 255}
-	resultsAccentBlue   = color.NRGBA{R: 224, G: 247, B: 250, A: 255}
-	resultsAccentPink   = color.NRGBA{R: 252, G: 228, B: 236, A: 255}
-	resultsAccentPurple = color.NRGBA{R: 243, G: 229, B: 245, A: 255}
-)
-
 // resultsTableRow is one logical row in the duplicate-files table.
 type resultsTableRow struct {
 	path         string
@@ -489,8 +479,10 @@ func buildResultsView(
 	}
 
 	pageLabel := widget.NewLabel("")
+	firstBtn := widget.NewButton("First", func() {})
 	prevBtn := widget.NewButton("Previous", func() {})
 	nextBtn := widget.NewButton("Next", func() {})
+	lastBtn := widget.NewButton("Last", func() {})
 
 	var resultsTable *widget.Table
 
@@ -502,13 +494,17 @@ func buildResultsView(
 		}
 
 		pageLabel.SetText(fmt.Sprintf("Page %d / %d", currentPage+1, totalPages))
+		firstBtn.Disable()
 		prevBtn.Disable()
 		nextBtn.Disable()
+		lastBtn.Disable()
 		if currentPage > 0 {
+			firstBtn.Enable()
 			prevBtn.Enable()
 		}
 		if currentPage < totalPages-1 {
 			nextBtn.Enable()
+			lastBtn.Enable()
 		}
 
 		pageRows = nil
@@ -560,6 +556,8 @@ func buildResultsView(
 	createTableCell := func() fyne.CanvasObject {
 		chk := widget.NewCheck("", nil)
 		lab := widget.NewLabel("")
+		lab.Wrapping = fyne.TextWrapOff
+		lab.Truncation = fyne.TextTruncateEllipsis
 		return container.NewStack(lab, chk)
 	}
 
@@ -582,7 +580,8 @@ func buildResultsView(
 			case 0, 1, 2, 3, 5:
 				lab.SetText("")
 			case 4:
-				lab.Wrapping = fyne.TextWrapWord
+				lab.Wrapping = fyne.TextWrapOff
+				lab.Truncation = fyne.TextTruncateEllipsis
 				lab.SetText(row.overflowNote)
 			}
 			return
@@ -607,23 +606,31 @@ func buildResultsView(
 			chk.Hide()
 			lab.Show()
 			lab.Wrapping = fyne.TextWrapOff
+			lab.Truncation = fyne.TextTruncateEllipsis
 			lab.SetText(strconv.Itoa(row.fileNum))
 		case 2:
 			chk.Hide()
 			lab.Show()
+			lab.Wrapping = fyne.TextWrapOff
+			lab.Truncation = fyne.TextTruncateEllipsis
 			lab.SetText(fmt.Sprintf("%d / %d", row.groupNum, totalGroupCount))
 		case 3:
 			chk.Hide()
 			lab.Show()
+			lab.Wrapping = fyne.TextWrapOff
+			lab.Truncation = fyne.TextTruncateEllipsis
 			lab.SetText(row.name)
 		case 4:
 			chk.Hide()
 			lab.Show()
-			lab.Wrapping = fyne.TextWrapWord
+			lab.Wrapping = fyne.TextWrapOff
+			lab.Truncation = fyne.TextTruncateEllipsis
 			lab.SetText(row.path)
 		case 5:
 			chk.Hide()
 			lab.Show()
+			lab.Wrapping = fyne.TextWrapOff
+			lab.Truncation = fyne.TextTruncateEllipsis
 			lab.SetText(formatBytes(row.size))
 		}
 	}
@@ -739,7 +746,7 @@ func buildResultsView(
 					fyne.Do(func() {
 						dlg.Hide()
 						appendOutput(fmt.Sprintf("Result action completed. Success: %d, Failed: %d", n-failures, failures))
-						dialog.ShowInformation("Action complete", fmt.Sprintf("Success: %d, Failed: %d", n-failures, failures), parent)
+						onBack()
 					})
 				}()
 			},
@@ -770,6 +777,12 @@ func buildResultsView(
 		dialog.ShowInformation("Export complete", "JSON exported to:\n"+path, parent)
 	})
 
+	firstBtn.OnTapped = func() {
+		if currentPage > 0 {
+			currentPage = 0
+			rebuildPage()
+		}
+	}
 	prevBtn.OnTapped = func() {
 		if currentPage > 0 {
 			currentPage--
@@ -782,61 +795,54 @@ func buildResultsView(
 			rebuildPage()
 		}
 	}
+	lastBtn.OnTapped = func() {
+		if currentPage < totalPages-1 {
+			currentPage = totalPages - 1
+			rebuildPage()
+		}
+	}
 
 	updateCount()
 
-	titleLbl := widget.NewLabel("Scan results")
-	titleLbl.TextStyle = fyne.TextStyle{Bold: true}
-
-	wrapWithTint := func(c color.Color, inner fyne.CanvasObject) fyne.CanvasObject {
-		rect := canvas.NewRectangle(c)
-		return container.NewMax(rect, container.NewPadded(inner))
-	}
-
-	overviewCard := widget.NewCard("Overview", "", wrapWithTint(resultsAccentBlue, container.NewVBox(summaryLabel, countLabel)))
-
-	selectionGroup := container.NewVBox(
-		widget.NewLabel("Selection"),
-		container.NewHBox(selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn),
+	toolbar := container.NewHBox(
+		selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn,
+		exportCSVBtn, exportJSONBtn,
 	)
-	exportGroup := container.NewVBox(
-		widget.NewLabel("Export"),
-		container.NewHBox(exportCSVBtn, exportJSONBtn),
-	)
-	actionsRow := container.NewHBox(
-		container.NewPadded(selectionGroup),
+	toolbarScroll := container.NewHScroll(toolbar)
+
+	paginationBar := container.NewHBox(
 		layout.NewSpacer(),
-		container.NewPadded(exportGroup),
+		firstBtn,
+		prevBtn,
+		pageLabel,
+		nextBtn,
+		lastBtn,
+		layout.NewSpacer(),
 	)
-	actionsCard := widget.NewCard("Actions", "", wrapWithTint(resultsAccentPurple, actionsRow))
-
-	tableCard := widget.NewCard("Duplicate files", "", wrapWithTint(resultsAccentPink, resultsTable))
-
-	paginationBar := container.NewHBox(prevBtn, pageLabel, nextBtn, layout.NewSpacer())
-	pageRow := container.NewHBox(layout.NewSpacer(), paginationBar)
 
 	cancelBtn := widget.NewButton("Back to scan", func() {
 		onBack()
 	})
-	bottomBar := container.NewHBox(layout.NewSpacer(), cancelBtn, bottomDeleteBtn)
+	actionBar := container.NewHBox(layout.NewSpacer(), cancelBtn, bottomDeleteBtn)
 
-	center := container.NewVBox(
-		titleLbl,
-		overviewCard,
-		actionsCard,
-		tableCard,
-		pageRow,
+	bottomStack := container.NewVBox(
+		paginationBar,
+		actionBar,
 	)
 
-	bg := canvas.NewRectangle(resultsBgPage)
-	root := container.NewMax(bg, container.NewPadded(center))
+	top := container.NewVBox(
+		widget.NewLabel("Review duplicates and choose actions"),
+		summaryLabel,
+		countLabel,
+		toolbarScroll,
+	)
 
 	out := container.NewBorder(
+		container.NewPadded(top),
+		container.NewPadded(bottomStack),
 		nil,
-		container.NewPadded(bottomBar),
 		nil,
-		nil,
-		root,
+		resultsTable,
 	)
 	rebuildPage()
 	return out
