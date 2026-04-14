@@ -34,6 +34,8 @@ func main() {
 	exportPath := flag.String("export-path", "", "Output path for exported report (optional)")
 	autoSelect := flag.String("auto-select", "", "Auto deletion selection strategy: newest or oldest (optional)")
 	matchMode := flag.String("match-mode", string(duplicates.MatchModeContent), "Duplicate matching mode: content|name|name+content|size")
+	deleteMode := flag.String("delete-mode", string(cleanup.DeletionModeDelete), "Delete mode: delete|quarantine")
+	quarantineDir := flag.String("quarantine-dir", "", "Optional quarantine folder when delete-mode=quarantine")
 	flag.Parse()
 	if *showVersion {
 		fmt.Printf("duplica-scan %s\n", buildinfo.Version)
@@ -67,6 +69,7 @@ func main() {
 	console.PrintSummaryLine(fmt.Sprintf("Dry run: %t", *dryRun))
 	console.PrintSummaryLine(fmt.Sprintf("Hash workers: %d", *hashWorkers))
 	console.PrintSummaryLine(fmt.Sprintf("Match mode: %s", *matchMode))
+	console.PrintSummaryLine(fmt.Sprintf("Delete mode: %s", *deleteMode))
 
 	console.PrintStage("Stage 2/4: Discover and Hash")
 	fmt.Printf("Scanning: %s\n", *rootPath)
@@ -149,7 +152,11 @@ func main() {
 		return
 	}
 
-	results := cleanup.DeleteFiles(selected, *dryRun)
+	results := cleanup.DeleteFilesWithOptions(selected, cleanup.DeleteOptions{
+		DryRun:        *dryRun,
+		Mode:          cleanup.DeletionMode(strings.TrimSpace(strings.ToLower(*deleteMode))),
+		QuarantineDir: strings.TrimSpace(*quarantineDir),
+	})
 	failures := 0
 	for _, result := range results {
 		if result.Err != nil {

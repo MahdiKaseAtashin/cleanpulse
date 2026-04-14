@@ -315,13 +315,14 @@ func (e *Engine) execute(ctx context.Context, plan []PlanItem, cfg Config) []Exe
 			continue
 		}
 		var err error
+		deleteMode := normalizeDeleteMode(cfg.DeleteMode)
 		switch item.Task.Kind {
 		case TaskKindPath:
-			results[i].DeletedItems, err = cleanupDirectory(item.Task.PathTask.Path, cfg.MinAge)
+			results[i].DeletedItems, err = cleanupDirectoryWithMode(item.Task.PathTask.Path, cfg.MinAge, deleteMode, cfg.QuarantineDir)
 			results[i].DeletedBytes = item.EstimatedSize
 		case TaskKindPattern:
 			paths := strings.Split(item.Task.Description, ";")
-			results[i].DeletedItems, err = cleanupMatchedDirectories(paths)
+			results[i].DeletedItems, err = cleanupMatchedDirectoriesWithMode(paths, deleteMode, cfg.QuarantineDir)
 			results[i].DeletedBytes = item.EstimatedSize
 		case TaskKindCommand:
 			err = runCommand(ctx, item.Task.CommandTask.Executable, item.Task.CommandTask.Args...)
@@ -334,6 +335,17 @@ func (e *Engine) execute(ctx context.Context, plan []PlanItem, cfg Config) []Exe
 		results[i].Duration = time.Since(start)
 	}
 	return results
+}
+
+func normalizeDeleteMode(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == "" {
+		return "delete"
+	}
+	if raw == "quarantine" {
+		return "quarantine"
+	}
+	return "delete"
 }
 
 func directorySize(root string, minAge time.Duration) (int64, error) {
@@ -360,6 +372,10 @@ func directorySize(root string, minAge time.Duration) (int64, error) {
 }
 
 func cleanupDirectory(root string, minAge time.Duration) (int, error) {
+	return cleanupDirectoryWithMode(root, minAge, "delete", "")
+}
+
+func cleanupDirectoryWithMode(root string, minAge time.Duration, mode string, quarantineDir string) (int, error) {
 	if !isSafeCleanupPath(root) {
 		return 0, fmt.Errorf("unsafe cleanup path rejected: %s", root)
 	}
@@ -377,8 +393,14 @@ func cleanupDirectory(root string, minAge time.Duration) (int, error) {
 				continue
 			}
 		}
-		if err := os.RemoveAll(target); err != nil {
-			return removed, err
+		if mode == "quarantine" {
+			if _, err := movePathToQuarantine(target, quarantineDir); err != nil {
+				return removed, err
+			}
+		} else {
+			if err := os.RemoveAll(target); err != nil {
+				return removed, err
+			}
 		}
 		removed++
 	}
@@ -386,6 +408,10 @@ func cleanupDirectory(root string, minAge time.Duration) (int, error) {
 }
 
 func cleanupMatchedDirectories(paths []string) (int, error) {
+	return cleanupMatchedDirectoriesWithMode(paths, "delete", "")
+}
+
+func cleanupMatchedDirectoriesWithMode(paths []string, mode string, quarantineDir string) (int, error) {
 	removed := 0
 	for _, path := range paths {
 		path = strings.TrimSpace(path)
@@ -395,12 +421,37 @@ func cleanupMatchedDirectories(paths []string) (int, error) {
 		if !isSafeCleanupPath(path) {
 			return removed, fmt.Errorf("unsafe cleanup path rejected: %s", path)
 		}
-		if err := os.RemoveAll(path); err != nil {
-			return removed, err
+		if mode == "quarantine" {
+			if _, err := movePathToQuarantine(path, quarantineDir); err != nil {
+				return removed, err
+			}
+		} else {
+			if err := os.RemoveAll(path); err != nil {
+				return removed, err
+			}
 		}
 		removed++
 	}
 	return removed, nil
+}
+
+func movePathToQuarantine(path string, quarantineDir string) (string, error) {
+	baseDir := strings.TrimSpace(quarantineDir)
+	if baseDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		baseDir = filepath.Join(home, ".duplica-scan", "quarantine")
+	}
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return "", err
+	}
+	target := filepath.Join(baseDir, fmt.Sprintf("%d-%d-%s", time.Now().UnixNano(), os.Getpid(), filepath.Base(path)))
+	if err := os.Rename(path, target); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 
 func discoverPatternTargets(roots []string, names []string, minAge time.Duration) ([]string, int64, error) {

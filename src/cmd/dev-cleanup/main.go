@@ -20,6 +20,8 @@ func main() {
 	verbose := flag.Bool("verbose", false, "Verbose logging")
 	parallelism := flag.Int("parallelism", runtime.NumCPU(), "Parallel workers for size planning")
 	minAgeHours := flag.Int("min-age-hours", 24, "Delete only entries older than this age")
+	deleteMode := flag.String("delete-mode", "delete", "Deletion mode: delete|quarantine")
+	quarantineDir := flag.String("quarantine-dir", "", "Optional quarantine directory when delete-mode=quarantine")
 	processAware := flag.Bool("process-aware", true, "Skip IDE/browser cache tasks when related apps are running")
 	includeCategories := flag.String("include-categories", "", "Comma-separated categories to include")
 	includeIDs := flag.String("include-ids", "", "Comma-separated cleanup IDs to include")
@@ -35,6 +37,8 @@ func main() {
 		DryRun:            *dryRun,
 		AssumeYes:         *yes,
 		Verbose:           *verbose,
+		DeleteMode:        strings.TrimSpace(strings.ToLower(*deleteMode)),
+		QuarantineDir:     strings.TrimSpace(*quarantineDir),
 		Parallelism:       *parallelism,
 		MinAge:            time.Duration(*minAgeHours) * time.Hour,
 		ProcessAware:      *processAware,

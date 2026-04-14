@@ -95,6 +95,8 @@ type Config struct {
 	AssumeYes           bool
 	Verbose             bool
 	DisableCommandTasks bool
+	DeleteMode          string
+	QuarantineDir       string
 	Parallelism         int
 	MinAge              time.Duration
 	ProcessAware        bool

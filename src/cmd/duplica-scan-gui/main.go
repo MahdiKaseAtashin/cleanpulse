@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"duplica-scan/src/internal/buildinfo"
+	"duplica-scan/src/internal/cleanup"
 	"duplica-scan/src/internal/devcleanup"
 	"duplica-scan/src/internal/duplicates"
 	"duplica-scan/src/internal/hash"
@@ -80,6 +81,10 @@ func main() {
 
 	exportFormatSelect := widget.NewSelect([]string{"none", "csv", "json"}, nil)
 	exportFormatSelect.SetSelected("none")
+	deleteModeSelect := widget.NewSelect([]string{"Delete permanently", "Move to safety backup"}, nil)
+	deleteModeSelect.SetSelected("Delete permanently")
+	quarantinePathEntry := widget.NewEntry()
+	quarantinePathEntry.SetPlaceHolder("Optional safety backup folder")
 
 	exportPathEntry := widget.NewEntry()
 	exportPathEntry.SetPlaceHolder("Where to save the report")
@@ -279,7 +284,17 @@ func main() {
 					statusLabel.SetText("Ready")
 				})
 			}
-			resultsView := buildResultsView(w, onBack, groups, sorted, dryRunCheck.Checked, initialSelection, appendOutput)
+			resultsView := buildResultsView(
+				w,
+				onBack,
+				groups,
+				sorted,
+				dryRunCheck.Checked,
+				initialSelection,
+				appendOutput,
+				duplicateDeleteModeFromLabel(deleteModeSelect.Selected),
+				strings.TrimSpace(quarantinePathEntry.Text),
+			)
 
 			if exportFormat != "" {
 				if err := report.Export(groups, exportFormat, exportPath); err != nil {
@@ -319,6 +334,8 @@ func main() {
 	duplicateOutputForm := widget.NewForm(
 		widget.NewFormItem("Report type", exportFormatSelect),
 		widget.NewFormItem("Save report to", exportPathEntry),
+		widget.NewFormItem("Remove duplicates by", deleteModeSelect),
+		widget.NewFormItem("Safety backup folder", quarantinePathEntry),
 	)
 	duplicateSettingsTabs := container.NewAppTabs(
 		container.NewTabItem("General", container.NewPadded(duplicateGeneralForm)),
@@ -404,6 +421,15 @@ func duplicateMatchModeFromLabel(label string) duplicates.MatchMode {
 		return duplicates.MatchModeSize
 	default:
 		return duplicates.MatchModeContent
+	}
+}
+
+func duplicateDeleteModeFromLabel(label string) cleanup.DeletionMode {
+	switch strings.TrimSpace(strings.ToLower(label)) {
+	case "move to safety backup":
+		return cleanup.DeletionModeQuarantine
+	default:
+		return cleanup.DeletionModeDelete
 	}
 }
 
@@ -594,6 +620,10 @@ func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, fyne.CanvasObject)
 	reportFormat.SetSelected("none")
 	reportPath := widget.NewEntry()
 	reportPath.SetPlaceHolder("Where to save the cleanup report")
+	cleanupDeleteModeSelect := widget.NewSelect([]string{"Delete permanently", "Move to safety backup"}, nil)
+	cleanupDeleteModeSelect.SetSelected("Delete permanently")
+	cleanupQuarantineEntry := widget.NewEntry()
+	cleanupQuarantineEntry.SetPlaceHolder("Optional safety backup folder")
 	targetPathEntry := widget.NewEntry()
 	targetPathEntry.SetPlaceHolder("Optional: choose a folder to focus cleanup")
 	targetBrowseBtn := widget.NewButton("Choose Folder", func() {
@@ -641,6 +671,8 @@ func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, fyne.CanvasObject)
 			AssumeYes:           assumeYes.Checked,
 			Verbose:             false,
 			DisableCommandTasks: true,
+			DeleteMode:          string(duplicateDeleteModeFromLabel(cleanupDeleteModeSelect.Selected)),
+			QuarantineDir:       strings.TrimSpace(cleanupQuarantineEntry.Text),
 			Parallelism:         p,
 			MinAge:              time.Duration(minHours) * time.Hour,
 			ProcessAware:        processAware.Checked,
@@ -738,6 +770,8 @@ func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, fyne.CanvasObject)
 	cleanupOutputForm := widget.NewForm(
 		widget.NewFormItem("Report type", reportFormat),
 		widget.NewFormItem("Save report to", reportPath),
+		widget.NewFormItem("Delete mode", cleanupDeleteModeSelect),
+		widget.NewFormItem("Safety backup folder", cleanupQuarantineEntry),
 	)
 	cleanupSettingsTabs := container.NewAppTabs(
 		container.NewTabItem("General", container.NewPadded(cleanupGeneralForm)),
@@ -1119,6 +1153,8 @@ func buildResultsView(
 	dryRun bool,
 	initialSelection map[string]struct{},
 	appendOutput func(string),
+	deleteMode cleanup.DeletionMode,
+	quarantineDir string,
 ) fyne.CanvasObject {
 	totalGroupCount := len(sortedGroups)
 
@@ -1428,24 +1464,34 @@ func buildResultsView(
 				dlg.Show()
 
 				go func() {
-					failures := 0
-					for i, path := range paths {
+					for i := 0; i < n; i++ {
 						idx := i + 1
 						fyne.Do(func() {
 							if n > 0 {
 								prog.SetValue(float64(idx) / float64(n))
-								status.SetText(fmt.Sprintf("Deleting %d of %d (%.0f%%)…", idx, n, 100*float64(idx)/float64(n)))
+								status.SetText(fmt.Sprintf("Processing %d of %d (%.0f%%)…", idx, n, 100*float64(idx)/float64(n)))
 							}
 						})
-						err := os.Remove(path)
-						if err != nil {
+					}
+					results := cleanup.DeleteFilesWithOptions(paths, cleanup.DeleteOptions{
+						DryRun:        dryRun,
+						Mode:          deleteMode,
+						QuarantineDir: quarantineDir,
+					})
+					failures := 0
+					for _, result := range results {
+						if result.Err != nil {
 							failures++
-							appendOutput(fmt.Sprintf("Failed: %s (%v)", path, err))
+							appendOutput(fmt.Sprintf("Failed: %s (%v)", result.Path, result.Err))
+							continue
+						}
+						if result.BackupPath != "" {
+							appendOutput(fmt.Sprintf("Moved to safety backup: %s -> %s", result.Path, result.BackupPath))
 						}
 					}
 					fyne.Do(func() {
 						dlg.Hide()
-						appendOutput(fmt.Sprintf("Result action completed. Success: %d, Failed: %d", n-failures, failures))
+						appendOutput(fmt.Sprintf("Result action completed. Success: %d, Failed: %d", len(results)-failures, failures))
 						onBack()
 					})
 				}()
