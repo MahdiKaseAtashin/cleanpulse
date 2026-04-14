@@ -21,6 +21,7 @@ import (
 	"duplica-scan/src/internal/devcleanup"
 	"duplica-scan/src/internal/duplicates"
 	"duplica-scan/src/internal/hash"
+	"duplica-scan/src/internal/model"
 	"duplica-scan/src/internal/report"
 	"duplica-scan/src/internal/scanner"
 	"duplica-scan/src/internal/selection"
@@ -1442,9 +1443,81 @@ type resultsTableRow struct {
 	path         string
 	name         string
 	size         int64
+	modifiedAt   time.Time
 	groupNum     int
 	fileNum      int
 	overflowNote string // non-empty => informational row (no checkbox)
+}
+
+const (
+	keepRuleNewest         = "Keep newest"
+	keepRuleOldest         = "Keep oldest"
+	keepRuleLargest        = "Keep largest"
+	keepRuleFolderPriority = "Keep by folder priority"
+)
+
+func chooseKeeper(files []model.FileMeta, rule string, folderPriorities []string) model.FileMeta {
+	if len(files) == 0 {
+		return model.FileMeta{}
+	}
+	best := files[0]
+	bestScore := folderPriorityScore(best.Path, folderPriorities)
+	for i := 1; i < len(files); i++ {
+		current := files[i]
+		switch rule {
+		case keepRuleOldest:
+			if current.ModifiedAt.Before(best.ModifiedAt) || (current.ModifiedAt.Equal(best.ModifiedAt) && current.Path < best.Path) {
+				best = current
+			}
+		case keepRuleLargest:
+			if current.Size > best.Size || (current.Size == best.Size && current.Path < best.Path) {
+				best = current
+			}
+		case keepRuleFolderPriority:
+			score := folderPriorityScore(current.Path, folderPriorities)
+			if score < bestScore || (score == bestScore && (current.ModifiedAt.After(best.ModifiedAt) || (current.ModifiedAt.Equal(best.ModifiedAt) && current.Path < best.Path))) {
+				best = current
+				bestScore = score
+			}
+		default:
+			if current.ModifiedAt.After(best.ModifiedAt) || (current.ModifiedAt.Equal(best.ModifiedAt) && current.Path < best.Path) {
+				best = current
+			}
+		}
+	}
+	return best
+}
+
+func folderPriorityScore(path string, priorities []string) int {
+	cleanPath := strings.ToLower(filepath.Clean(path))
+	for i, root := range priorities {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		cleanRoot := strings.ToLower(filepath.Clean(root))
+		if strings.HasPrefix(cleanPath, cleanRoot) {
+			return i
+		}
+	}
+	return len(priorities) + 1000
+}
+
+func applyKeepRule(groups []duplicates.Group, rule string, folderPriorities []string) []string {
+	paths := make([]string, 0, 256)
+	for _, group := range groups {
+		if len(group.Files) < 2 {
+			continue
+		}
+		keeper := chooseKeeper(group.Files, rule, folderPriorities)
+		for _, file := range group.Files {
+			if file.Path == keeper.Path {
+				continue
+			}
+			paths = append(paths, file.Path)
+		}
+	}
+	return paths
 }
 
 func buildResultsView(
@@ -1465,6 +1538,10 @@ func buildResultsView(
 		selected[p] = struct{}{}
 	}
 	var pageRows []resultsTableRow
+	groupFilesByNum := make(map[int][]model.FileMeta, len(sortedGroups))
+	for i, group := range sortedGroups {
+		groupFilesByNum[i+1] = group.Files
+	}
 
 	totalFiles := 0
 	totalReclaimable := int64(0)
@@ -1523,6 +1600,9 @@ func buildResultsView(
 	lastBtn := widget.NewButton("Last", func() {})
 
 	var resultsTable *widget.Table
+	selectedGroupNum := 0
+	selectedPath := ""
+	var refreshCompare func()
 
 	rebuildPage := func() {
 		start := currentPage * resultsGroupsPerPage
@@ -1568,11 +1648,12 @@ func buildResultsView(
 
 			for fi, file := range files {
 				pageRows = append(pageRows, resultsTableRow{
-					path:     file.Path,
-					name:     file.Name,
-					size:     file.Size,
-					groupNum: gnum,
-					fileNum:  fi + 1,
+					path:       file.Path,
+					name:       file.Name,
+					size:       file.Size,
+					modifiedAt: file.ModifiedAt,
+					groupNum:   gnum,
+					fileNum:    fi + 1,
 				})
 			}
 			if overflow > 0 {
@@ -1697,6 +1778,18 @@ func buildResultsView(
 	resultsTable.SetColumnWidth(3, 160)
 	resultsTable.SetColumnWidth(4, 320)
 	resultsTable.SetColumnWidth(5, 112)
+	resultsTable.OnSelected = func(id widget.TableCellID) {
+		if id.Row < 0 || id.Row >= len(pageRows) {
+			return
+		}
+		row := pageRows[id.Row]
+		if row.overflowNote != "" {
+			return
+		}
+		selectedPath = row.path
+		selectedGroupNum = row.groupNum
+		refreshCompare()
+	}
 
 	syncVisibleChecks := func() {
 		if resultsTable != nil {
@@ -1728,6 +1821,86 @@ func buildResultsView(
 	keepOldestBtn := widget.NewButton("Keep Oldest", func() {
 		setSelection(selection.AutoSelect(originalGroups, selection.StrategyOldest))
 	})
+	keepRuleSelect := widget.NewSelect([]string{keepRuleNewest, keepRuleOldest, keepRuleLargest, keepRuleFolderPriority}, nil)
+	keepRuleSelect.SetSelected(keepRuleNewest)
+	folderPriorityEntry := widget.NewEntry()
+	folderPriorityEntry.SetPlaceHolder("Folder priority list (comma-separated), e.g. D:/Work,D:/Archive")
+	applyRuleBtn := widget.NewButton("Apply Keep Rule", func() {
+		priorities := []string{}
+		if keepRuleSelect.Selected == keepRuleFolderPriority {
+			for _, part := range strings.Split(folderPriorityEntry.Text, ",") {
+				p := strings.TrimSpace(part)
+				if p != "" {
+					priorities = append(priorities, p)
+				}
+			}
+		}
+		setSelection(applyKeepRule(originalGroups, keepRuleSelect.Selected, priorities))
+	})
+
+	selectedFileDetails := widget.NewMultiLineEntry()
+	selectedFileDetails.Disable()
+	keeperFileDetails := widget.NewMultiLineEntry()
+	keeperFileDetails.Disable()
+	refreshCompare = func() {
+		if selectedGroupNum == 0 || selectedPath == "" {
+			selectedFileDetails.SetText("Select a file row to compare.")
+			keeperFileDetails.SetText("Rule-based keep candidate will appear here.")
+			return
+		}
+		files := groupFilesByNum[selectedGroupNum]
+		if len(files) == 0 {
+			selectedFileDetails.SetText("No file data available for this group.")
+			keeperFileDetails.SetText("No keep candidate available.")
+			return
+		}
+		var current model.FileMeta
+		found := false
+		for _, f := range files {
+			if f.Path == selectedPath {
+				current = f
+				found = true
+				break
+			}
+		}
+		if !found {
+			selectedFileDetails.SetText("Selected file is not in current group data.")
+			keeperFileDetails.SetText("No keep candidate available.")
+			return
+		}
+		priorities := []string{}
+		if keepRuleSelect.Selected == keepRuleFolderPriority {
+			for _, part := range strings.Split(folderPriorityEntry.Text, ",") {
+				p := strings.TrimSpace(part)
+				if p != "" {
+					priorities = append(priorities, p)
+				}
+			}
+		}
+		keeper := chooseKeeper(files, keepRuleSelect.Selected, priorities)
+		selectedFileDetails.SetText(
+			fmt.Sprintf(
+				"Selected file\n\nName: %s\nSize: %s\nModified: %s\nPath: %s",
+				current.Name,
+				formatBytes(current.Size),
+				current.ModifiedAt.Local().Format("2006-01-02 15:04:05"),
+				current.Path,
+			),
+		)
+		keeperFileDetails.SetText(
+			fmt.Sprintf(
+				"Keep candidate (%s)\n\nName: %s\nSize: %s\nModified: %s\nPath: %s",
+				keepRuleSelect.Selected,
+				keeper.Name,
+				formatBytes(keeper.Size),
+				keeper.ModifiedAt.Local().Format("2006-01-02 15:04:05"),
+				keeper.Path,
+			),
+		)
+	}
+	keepRuleSelect.OnChanged = func(string) { refreshCompare() }
+	folderPriorityEntry.OnChanged = func(string) { refreshCompare() }
+	refreshCompare()
 
 	deleteLabel := "Delete"
 
@@ -1853,7 +2026,7 @@ func buildResultsView(
 	updateCount()
 
 	toolbar := container.NewHBox(
-		selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn,
+		selectAllBtn, clearBtn, keepNewestBtn, keepOldestBtn, keepRuleSelect, applyRuleBtn,
 		exportCSVBtn, exportJSONBtn,
 	)
 	toolbarScroll := container.NewHScroll(toolbar)
@@ -1883,13 +2056,22 @@ func buildResultsView(
 		summaryLabel,
 		countLabel,
 		toolbarScroll,
+		folderPriorityEntry,
+	)
+	comparePane := container.NewVBox(
+		widget.NewLabel("Side-by-side compare"),
+		container.NewGridWithColumns(
+			2,
+			container.NewBorder(widget.NewLabel("Selected"), nil, nil, nil, selectedFileDetails),
+			container.NewBorder(widget.NewLabel("Keep by rule"), nil, nil, nil, keeperFileDetails),
+		),
 	)
 
 	out := container.NewBorder(
 		container.NewPadded(top),
 		container.NewPadded(bottomStack),
 		nil,
-		nil,
+		container.NewPadded(comparePane),
 		resultsTable,
 	)
 	rebuildPage()
