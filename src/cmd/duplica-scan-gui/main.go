@@ -496,13 +496,12 @@ func main() {
 			)),
 		),
 	)
-	modulesArea := container.NewMax(widget.NewLabel("Loading quick actions..."))
 	homeView = container.NewBorder(
 		container.NewVBox(widget.NewLabel(fmt.Sprintf("Duplica Scan GUI %s", buildinfo.Version))),
 		nil,
 		nil,
 		nil,
-		container.NewVScroll(container.NewVBox(heroSection, healthCard, widget.NewLabel("Quick actions"), modulesArea)),
+		container.NewVScroll(container.NewVBox(heroSection, healthCard)),
 	)
 	content = container.NewMax(buildPageSurface(homeView))
 
@@ -566,21 +565,18 @@ func main() {
 		duplicateTabBtn.Refresh()
 		cleanupTabBtn.Refresh()
 	}
-	homeTabBtn = widget.NewButton(localize(healthState.Accessibility.Language, "home_tab"), func() {
+	homeTabBtn = widget.NewButtonWithIcon("", theme.HomeIcon(), func() {
 		updateTab("home")
 	})
-	duplicateTabBtn = widget.NewButton(localize(healthState.Accessibility.Language, "duplicate_tab"), func() {
+	duplicateTabBtn = widget.NewButtonWithIcon("", theme.SearchIcon(), func() {
 		updateTab("duplicate")
 	})
-	cleanupTabBtn = widget.NewButton(localize(healthState.Accessibility.Language, "cleanup_tab"), func() {
+	cleanupTabBtn = widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 		updateTab("cleanup")
 	})
 	settingsBtn := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
 		openSettingsHub(duplicateSettingsTabs, cleanupSettingsTabs, updateTab, &healthState.Accessibility, func() {
 			applyAccessibilityTheme(a, healthState.Accessibility)
-			homeTabBtn.SetText(localize(healthState.Accessibility.Language, "home_tab"))
-			duplicateTabBtn.SetText(localize(healthState.Accessibility.Language, "duplicate_tab"))
-			cleanupTabBtn.SetText(localize(healthState.Accessibility.Language, "cleanup_tab"))
 			healthTitleLabel.SetText(localize(healthState.Accessibility.Language, "system_health"))
 			homeToDuplicateBtn.SetText(localize(healthState.Accessibility.Language, "duplicate_tab"))
 			homeToCleanupBtn.SetText(localize(healthState.Accessibility.Language, "cleanup_tab"))
@@ -597,97 +593,6 @@ func main() {
 		})
 	})
 	settingsBtn.Importance = widget.MediumImportance
-	actionSpecs := map[string]quickActionSpec{
-		"scan-duplicates": {
-			ID:       "scan-duplicates",
-			Title:    "Scan duplicate files",
-			Subtitle: "Find repeated files and review side-by-side before deleting.",
-			Icon:     theme.SearchIcon(),
-			Open:     func() { updateTab("duplicate") },
-		},
-		"run-cleanup": {
-			ID:       "run-cleanup",
-			Title:    "Run cleanup",
-			Subtitle: "Clean cache, temp, and optional build artifacts safely.",
-			Icon:     theme.DeleteIcon(),
-			Open:     func() { updateTab("cleanup") },
-		},
-		"open-settings": {
-			ID:       "open-settings",
-			Title:    "Open settings",
-			Subtitle: "Change language, accessibility, risk defaults, and outputs.",
-			Icon:     theme.SettingsIcon(),
-			Open:     func() { settingsBtn.OnTapped() },
-		},
-		"refresh-health": {
-			ID:       "refresh-health",
-			Title:    "Refresh system health",
-			Subtitle: "Recalculate cache/temp sizes and latest activity stats.",
-			Icon:     theme.ViewRefreshIcon(),
-			Open:     func() { refreshHealthCard() },
-		},
-	}
-	defaultActionOrder := []string{"scan-duplicates", "run-cleanup", "open-settings", "refresh-health"}
-	if len(healthState.HomeQuickActions) == 0 {
-		healthState.HomeQuickActions = append([]string(nil), defaultActionOrder...)
-	}
-	if len(healthState.PinnedQuickActions) == 0 {
-		healthState.PinnedQuickActions = append([]string(nil), healthState.HomeQuickActions...)
-	}
-	quickActionPinned := make(map[string]bool, len(healthState.PinnedQuickActions))
-	for _, id := range healthState.PinnedQuickActions {
-		quickActionPinned[id] = true
-	}
-	var rebuildQuickActions func()
-	rebuildQuickActions = func() {
-		tiles := make([]fyne.CanvasObject, 0, len(healthState.HomeQuickActions))
-		for idx, id := range healthState.HomeQuickActions {
-			spec, ok := actionSpecs[id]
-			if !ok || !quickActionPinned[id] {
-				continue
-			}
-			currentID := id
-			currentIndex := idx
-			pinText := "Unpin"
-			if !quickActionPinned[currentID] {
-				pinText = "Pin"
-			}
-			controls := container.NewHBox(
-				widget.NewButton(pinText, func() {
-					quickActionPinned[currentID] = !quickActionPinned[currentID]
-					healthState.PinnedQuickActions = collectPinnedActionIDs(healthState.HomeQuickActions, quickActionPinned)
-					_ = saveGUIHealthState(healthState)
-					rebuildQuickActions()
-				}),
-				widget.NewButtonWithIcon("", theme.MoveUpIcon(), func() {
-					if currentIndex <= 0 {
-						return
-					}
-					healthState.HomeQuickActions[currentIndex], healthState.HomeQuickActions[currentIndex-1] = healthState.HomeQuickActions[currentIndex-1], healthState.HomeQuickActions[currentIndex]
-					healthState.PinnedQuickActions = collectPinnedActionIDs(healthState.HomeQuickActions, quickActionPinned)
-					_ = saveGUIHealthState(healthState)
-					rebuildQuickActions()
-				}),
-				widget.NewButtonWithIcon("", theme.MoveDownIcon(), func() {
-					if currentIndex >= len(healthState.HomeQuickActions)-1 {
-						return
-					}
-					healthState.HomeQuickActions[currentIndex], healthState.HomeQuickActions[currentIndex+1] = healthState.HomeQuickActions[currentIndex+1], healthState.HomeQuickActions[currentIndex]
-					healthState.PinnedQuickActions = collectPinnedActionIDs(healthState.HomeQuickActions, quickActionPinned)
-					_ = saveGUIHealthState(healthState)
-					rebuildQuickActions()
-				}),
-			)
-			tiles = append(tiles, buildFeatureCardWithControls(spec.Title, spec.Subtitle, spec.Icon, spec.Open, controls))
-		}
-		if len(tiles) == 0 {
-			modulesArea.Objects = []fyne.CanvasObject{widget.NewLabel("No quick actions pinned. Use Settings to re-enable modules.")}
-		} else {
-			modulesArea.Objects = []fyne.CanvasObject{container.NewGridWithColumns(2, tiles...)}
-		}
-		modulesArea.Refresh()
-	}
-	rebuildQuickActions()
 
 	sidebarBg := canvas.NewRectangle(color.RGBA{R: 21, G: 24, B: 31, A: 255})
 	sidebarBg.SetMinSize(fyne.NewSize(220, 10))
@@ -1024,14 +929,6 @@ func (b *hoverButton) MouseOut() {
 	}
 }
 
-type quickActionSpec struct {
-	ID       string
-	Title    string
-	Subtitle string
-	Icon     fyne.Resource
-	Open     func()
-}
-
 func localize(lang, key string) string {
 	lang = strings.ToLower(strings.TrimSpace(lang))
 	texts := map[string]map[string]string{
@@ -1109,8 +1006,6 @@ type guiHealthState struct {
 	LastDuplicateAt     time.Time `json:"last_duplicate_at"`
 	LastDuplicateGroups int       `json:"last_duplicate_groups"`
 	Accessibility       accessibilityPrefs `json:"accessibility"`
-	HomeQuickActions    []string  `json:"home_quick_actions"`
-	PinnedQuickActions  []string  `json:"pinned_quick_actions"`
 }
 
 func guiHealthStatePath() (string, error) {
@@ -1276,38 +1171,6 @@ func buildFeatureCard(title string, subtitle string, icon fyne.Resource, onOpen 
 		container.NewHBox(layout.NewSpacer(), openBtn),
 	))
 	return container.NewStack(bg, content)
-}
-
-func buildFeatureCardWithControls(title string, subtitle string, icon fyne.Resource, onOpen func(), controls fyne.CanvasObject) fyne.CanvasObject {
-	bg := canvas.NewRectangle(color.RGBA{R: 29, G: 34, B: 43, A: 255})
-	bg.CornerRadius = 10
-	titleLabel := widget.NewLabel(title)
-	titleLabel.TextStyle = fyne.TextStyle{Bold: true}
-	subLabel := widget.NewLabel(subtitle)
-	subLabel.Wrapping = fyne.TextWrapWord
-	openBtn := widget.NewButtonWithIcon("Open", icon, func() {
-		if onOpen != nil {
-			onOpen()
-		}
-	})
-	openBtn.Importance = widget.HighImportance
-	content := container.NewPadded(container.NewVBox(
-		titleLabel,
-		subLabel,
-		container.NewHBox(layout.NewSpacer(), openBtn),
-		controls,
-	))
-	return container.NewStack(bg, content)
-}
-
-func collectPinnedActionIDs(order []string, pinned map[string]bool) []string {
-	out := make([]string, 0, len(order))
-	for _, id := range order {
-		if pinned[id] {
-			out = append(out, id)
-		}
-	}
-	return out
 }
 
 func parseExtensions(raw string) map[string]struct{} {
