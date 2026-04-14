@@ -73,6 +73,9 @@ func main() {
 	tempSizeLabel := widget.NewLabel(localize(healthState.Accessibility.Language, "temp_size") + ": ...")
 	dupCountLabel := widget.NewLabel(fmt.Sprintf("%s: %d", localize(healthState.Accessibility.Language, "last_dups"), healthState.LastDuplicateGroups))
 	lastCleanupLabel := widget.NewLabel(localize(healthState.Accessibility.Language, "last_cleanup") + ": " + localize(healthState.Accessibility.Language, "never"))
+	dashboardCharts := container.NewMax(widget.NewLabel("Charts loading..."))
+	lastCacheBytes := int64(0)
+	lastTempBytes := int64(0)
 	if !healthState.LastCleanupAt.IsZero() {
 		lastCleanupLabel.SetText(localize(healthState.Accessibility.Language, "last_cleanup") + ": " + healthState.LastCleanupAt.Local().Format("2006-01-02 15:04"))
 	}
@@ -88,6 +91,8 @@ func main() {
 				} else {
 					healthStatusLabel.SetText("Updated")
 				}
+				lastCacheBytes = cacheBytes
+				lastTempBytes = tempBytes
 				cacheSizeLabel.SetText(localize(healthState.Accessibility.Language, "cache_size") + ": " + formatBytes(cacheBytes))
 				tempSizeLabel.SetText(localize(healthState.Accessibility.Language, "temp_size") + ": " + formatBytes(tempBytes))
 				dupCountLabel.SetText(fmt.Sprintf("%s: %d", localize(healthState.Accessibility.Language, "last_dups"), healthState.LastDuplicateGroups))
@@ -96,6 +101,10 @@ func main() {
 				} else {
 					lastCleanupLabel.SetText(localize(healthState.Accessibility.Language, "last_cleanup") + ": " + healthState.LastCleanupAt.Local().Format("2006-01-02 15:04"))
 				}
+				dashboardCharts.Objects = []fyne.CanvasObject{
+					buildDashboardMiniCharts(lastCacheBytes, lastTempBytes, healthState.LastDuplicateGroups, healthState.LastCleanupAt),
+				}
+				dashboardCharts.Refresh()
 			})
 		}()
 	}
@@ -474,6 +483,7 @@ func main() {
 	healthCard := container.NewVBox(
 		healthHeader,
 		statsGrid,
+		dashboardCharts,
 		healthStatusLabel,
 	)
 	heroSection := container.NewBorder(
@@ -1150,6 +1160,61 @@ func buildStatTile(title string, value *widget.Label, accent color.Color) fyne.C
 		container.NewPadded(container.NewVBox(titleLabel, value)),
 	)
 	return container.NewStack(bg, body)
+}
+
+func buildDashboardMiniCharts(cacheBytes int64, tempBytes int64, duplicateGroups int, lastCleanupAt time.Time) fyne.CanvasObject {
+	type metric struct {
+		name  string
+		value float64
+		label string
+		color color.Color
+	}
+	cleanupRecencyHours := float64(0)
+	if !lastCleanupAt.IsZero() {
+		cleanupRecencyHours = time.Since(lastCleanupAt).Hours()
+		if cleanupRecencyHours < 0 {
+			cleanupRecencyHours = 0
+		}
+	}
+	metrics := []metric{
+		{name: "Cache", value: float64(cacheBytes), label: formatBytes(cacheBytes), color: color.RGBA{R: 41, G: 98, B: 255, A: 255}},
+		{name: "Temp", value: float64(tempBytes), label: formatBytes(tempBytes), color: color.RGBA{R: 0, G: 137, B: 123, A: 255}},
+		{name: "Duplicates", value: float64(duplicateGroups), label: fmt.Sprintf("%d groups", duplicateGroups), color: color.RGBA{R: 156, G: 39, B: 176, A: 255}},
+		{name: "Cleanup age", value: cleanupRecencyHours, label: fmt.Sprintf("%.0f h", cleanupRecencyHours), color: color.RGBA{R: 255, G: 152, B: 0, A: 255}},
+	}
+	maxValue := float64(1)
+	for _, m := range metrics {
+		if m.value > maxValue {
+			maxValue = m.value
+		}
+	}
+	rows := make([]fyne.CanvasObject, 0, len(metrics)+1)
+	rows = append(rows, widget.NewLabel("Dashboard charts"))
+	for _, m := range metrics {
+		ratio := float32(m.value / maxValue)
+		if ratio < 0 {
+			ratio = 0
+		}
+		if ratio > 1 {
+			ratio = 1
+		}
+		width := float32(260)
+		fill := ratio * width
+		if fill < 3 && m.value > 0 {
+			fill = 3
+		}
+		bg := canvas.NewRectangle(color.RGBA{R: 52, G: 58, B: 68, A: 255})
+		bg.SetMinSize(fyne.NewSize(width, 14))
+		fg := canvas.NewRectangle(m.color)
+		bar := container.NewStack(bg, container.NewGridWrap(fyne.NewSize(fill, 14), fg))
+		rows = append(rows, container.NewBorder(
+			nil, nil,
+			container.NewGridWrap(fyne.NewSize(95, 20), widget.NewLabel(m.name)),
+			container.NewGridWrap(fyne.NewSize(95, 20), widget.NewLabel(m.label)),
+			container.NewGridWrap(fyne.NewSize(width, 20), bar),
+		))
+	}
+	return container.NewVBox(rows...)
 }
 
 func buildFeatureCard(title string, subtitle string, icon fyne.Resource, onOpen func()) fyne.CanvasObject {
