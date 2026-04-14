@@ -425,8 +425,8 @@ func main() {
 		_ = report
 		refreshHealthCard()
 	})
-	homeToDuplicateBtn := widget.NewButton(localize(healthState.Accessibility.Language, "duplicate_tab"), func() {})
-	homeToCleanupBtn := widget.NewButton(localize(healthState.Accessibility.Language, "cleanup_tab"), func() {})
+	homeToDuplicateBtn := newHoverButton(localize(healthState.Accessibility.Language, "duplicate_tab"), func() {}, nil)
+	homeToCleanupBtn := newHoverButton(localize(healthState.Accessibility.Language, "cleanup_tab"), func() {}, nil)
 	homeToDuplicateBtn.Importance = widget.HighImportance
 	homeToCleanupBtn.Importance = widget.HighImportance
 	heroTitle := widget.NewLabel("Smarter storage cleanup")
@@ -436,9 +436,28 @@ func main() {
 	heroGlow := canvas.NewCircle(color.RGBA{R: 80, G: 120, B: 255, A: 80})
 	heroGlow.Resize(fyne.NewSize(96, 96))
 	heroIcon := widget.NewIcon(theme.ComputerIcon())
+	heroLiftSpacer := canvas.NewRectangle(color.Transparent)
+	heroLiftSpacer.SetMinSize(fyne.NewSize(1, 2))
 	heroCardBg := canvas.NewRectangle(color.RGBA{R: 26, G: 30, B: 38, A: 255})
 	heroCardBg.CornerRadius = 10
 	startPulseAnimation(heroGlow)
+	startCardLiftAnimation(heroLiftSpacer, heroCardBg)
+	homeToDuplicateBtn.onHover = func(entered bool) {
+		if entered {
+			homeToDuplicateBtn.Importance = widget.WarningImportance
+		} else {
+			homeToDuplicateBtn.Importance = widget.HighImportance
+		}
+		homeToDuplicateBtn.Refresh()
+	}
+	homeToCleanupBtn.onHover = func(entered bool) {
+		if entered {
+			homeToCleanupBtn.Importance = widget.WarningImportance
+		} else {
+			homeToCleanupBtn.Importance = widget.HighImportance
+		}
+		homeToCleanupBtn.Refresh()
+	}
 	healthCard := container.NewBorder(
 		nil,
 		widget.NewSeparator(),
@@ -453,19 +472,25 @@ func main() {
 			healthStatusLabel,
 		),
 	)
-	heroSection := container.NewStack(
-		heroCardBg,
-		container.NewPadded(container.NewBorder(
-			nil,
-			nil,
-			container.NewStack(heroGlow, container.NewCenter(heroIcon)),
-			nil,
-			container.NewVBox(
-				heroTitle,
-				heroSubtitle,
-				container.NewHBox(homeToDuplicateBtn, homeToCleanupBtn),
-			),
-		)),
+	heroSection := container.NewBorder(
+		container.NewVBox(heroLiftSpacer),
+		nil,
+		nil,
+		nil,
+		container.NewStack(
+			heroCardBg,
+			container.NewPadded(container.NewBorder(
+				nil,
+				nil,
+				container.NewStack(heroGlow, container.NewCenter(heroIcon)),
+				nil,
+				container.NewVBox(
+					heroTitle,
+					heroSubtitle,
+					container.NewHBox(homeToDuplicateBtn, homeToCleanupBtn),
+				),
+			)),
+		),
 	)
 	homeView = container.NewBorder(
 		container.NewVBox(widget.NewLabel(fmt.Sprintf("Duplica Scan GUI %s", buildinfo.Version))),
@@ -789,6 +814,33 @@ func (t highContrastTheme) Font(s fyne.TextStyle) fyne.Resource     { return t.b
 func (t highContrastTheme) Icon(n fyne.ThemeIconName) fyne.Resource { return t.base.Icon(n) }
 func (t highContrastTheme) Size(n fyne.ThemeSizeName) float32       { return t.base.Size(n) }
 
+type hoverButton struct {
+	widget.Button
+	onHover func(entered bool)
+}
+
+func newHoverButton(label string, tapped func(), onHover func(bool)) *hoverButton {
+	b := &hoverButton{onHover: onHover}
+	b.ExtendBaseWidget(b)
+	b.SetText(label)
+	b.OnTapped = tapped
+	return b
+}
+
+func (b *hoverButton) MouseIn(*desktop.MouseEvent) {
+	if b.onHover != nil {
+		b.onHover(true)
+	}
+}
+
+func (b *hoverButton) MouseMoved(*desktop.MouseEvent) {}
+
+func (b *hoverButton) MouseOut() {
+	if b.onHover != nil {
+		b.onHover(false)
+	}
+}
+
 func localize(lang, key string) string {
 	lang = strings.ToLower(strings.TrimSpace(lang))
 	texts := map[string]map[string]string{
@@ -981,6 +1033,28 @@ func startPulseAnimation(target *canvas.Circle) {
 			fyne.Do(func() {
 				target.FillColor = color.RGBA{R: 80, G: 120, B: 255, A: alpha}
 				target.Refresh()
+			})
+		}
+	}()
+}
+
+func startCardLiftAnimation(spacer *canvas.Rectangle, bg *canvas.Rectangle) {
+	if spacer == nil || bg == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(55 * time.Millisecond)
+		defer ticker.Stop()
+		start := time.Now()
+		for t := range ticker.C {
+			phase := float64(t.Sub(start).Milliseconds()%2600) / 2600.0
+			offset := float32(2 + 4*(0.5+0.5*math.Sin(phase*2*math.Pi)))
+			alpha := uint8(245 + 10*(0.5+0.5*math.Sin(phase*2*math.Pi)))
+			fyne.Do(func() {
+				spacer.SetMinSize(fyne.NewSize(1, offset))
+				bg.FillColor = color.RGBA{R: 26, G: 30, B: 38, A: alpha}
+				spacer.Refresh()
+				bg.Refresh()
 			})
 		}
 	}()
