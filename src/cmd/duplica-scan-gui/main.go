@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"fmt"
 	"image/color"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -425,6 +426,18 @@ func main() {
 	})
 	homeToDuplicateBtn := widget.NewButton(localize(healthState.Accessibility.Language, "duplicate_tab"), func() {})
 	homeToCleanupBtn := widget.NewButton(localize(healthState.Accessibility.Language, "cleanup_tab"), func() {})
+	homeToDuplicateBtn.Importance = widget.HighImportance
+	homeToCleanupBtn.Importance = widget.HighImportance
+	heroTitle := widget.NewLabel("Smarter storage cleanup")
+	heroTitle.TextStyle = fyne.TextStyle{Bold: true}
+	heroSubtitle := widget.NewLabel("Clean safely, remove duplicates, and keep your computer healthy.")
+	heroSubtitle.Wrapping = fyne.TextWrapWord
+	heroGlow := canvas.NewCircle(color.RGBA{R: 80, G: 120, B: 255, A: 80})
+	heroGlow.Resize(fyne.NewSize(96, 96))
+	heroIcon := widget.NewIcon(theme.ComputerIcon())
+	heroCardBg := canvas.NewRectangle(color.RGBA{R: 26, G: 30, B: 38, A: 255})
+	heroCardBg.CornerRadius = 10
+	startPulseAnimation(heroGlow)
 	healthCard := container.NewBorder(
 		nil,
 		widget.NewSeparator(),
@@ -439,17 +452,28 @@ func main() {
 			healthStatusLabel,
 		),
 	)
+	heroSection := container.NewStack(
+		heroCardBg,
+		container.NewPadded(container.NewBorder(
+			nil,
+			nil,
+			container.NewStack(heroGlow, container.NewCenter(heroIcon)),
+			nil,
+			container.NewVBox(
+				heroTitle,
+				heroSubtitle,
+				container.NewHBox(homeToDuplicateBtn, homeToCleanupBtn),
+			),
+		)),
+	)
 	homeView = container.NewBorder(
-		container.NewVBox(
-			widget.NewLabel(fmt.Sprintf("Duplica Scan GUI %s", buildinfo.Version)),
-			widget.NewLabel("Home dashboard"),
-		),
+		container.NewVBox(widget.NewLabel(fmt.Sprintf("Duplica Scan GUI %s", buildinfo.Version))),
 		nil,
 		nil,
 		nil,
 		container.NewVBox(
+			heroSection,
 			healthCard,
-			container.NewHBox(layout.NewSpacer(), homeToDuplicateBtn, homeToCleanupBtn, layout.NewSpacer()),
 		),
 	)
 	content = container.NewMax(homeView)
@@ -904,6 +928,26 @@ func sumExistingDirSizes(paths []string) (int64, error) {
 		}
 	}
 	return total, nil
+}
+
+func startPulseAnimation(target *canvas.Circle) {
+	if target == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(40 * time.Millisecond)
+		defer ticker.Stop()
+		start := time.Now()
+		for t := range ticker.C {
+			phase := float64(t.Sub(start).Milliseconds()%2200) / 2200.0
+			// Smooth breathing pulse between ~40 and ~110 alpha.
+			alpha := uint8(40 + 70*(0.5+0.5*math.Sin(phase*2*math.Pi)))
+			fyne.Do(func() {
+				target.FillColor = color.RGBA{R: 80, G: 120, B: 255, A: alpha}
+				target.Refresh()
+			})
+		}
+	}()
 }
 
 func parseExtensions(raw string) map[string]struct{} {
