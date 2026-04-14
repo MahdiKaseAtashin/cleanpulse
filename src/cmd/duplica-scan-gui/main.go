@@ -50,6 +50,7 @@ func main() {
 	w.Resize(fyne.NewSize(980, 760))
 
 	var scanView fyne.CanvasObject
+	var homeView fyne.CanvasObject
 	var content *fyne.Container
 	healthState, _ := loadGUIHealthState()
 	if strings.TrimSpace(healthState.Accessibility.Language) == "" {
@@ -62,7 +63,7 @@ func main() {
 		healthState.Accessibility.ThemeMode = "system"
 	}
 	if strings.TrimSpace(healthState.Accessibility.StartPage) == "" {
-		healthState.Accessibility.StartPage = "Duplicate Files"
+		healthState.Accessibility.StartPage = "Home"
 	}
 	applyAccessibilityTheme(a, healthState.Accessibility)
 
@@ -422,24 +423,65 @@ func main() {
 		_ = report
 		refreshHealthCard()
 	})
-	content = container.NewMax(scanView)
+	homeToDuplicateBtn := widget.NewButton(localize(healthState.Accessibility.Language, "duplicate_tab"), func() {})
+	homeToCleanupBtn := widget.NewButton(localize(healthState.Accessibility.Language, "cleanup_tab"), func() {})
+	healthCard := container.NewBorder(
+		nil,
+		widget.NewSeparator(),
+		nil,
+		widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
+			refreshHealthCard()
+		}),
+		container.NewVBox(
+			widget.NewLabel(localize(healthState.Accessibility.Language, "system_health")),
+			container.NewGridWithColumns(2, cacheSizeLabel, tempSizeLabel),
+			container.NewGridWithColumns(2, dupCountLabel, lastCleanupLabel),
+			healthStatusLabel,
+		),
+	)
+	homeView = container.NewBorder(
+		container.NewVBox(
+			widget.NewLabel(fmt.Sprintf("Duplica Scan GUI %s", buildinfo.Version)),
+			widget.NewLabel("Home dashboard"),
+		),
+		nil,
+		nil,
+		nil,
+		container.NewVBox(
+			healthCard,
+			container.NewHBox(layout.NewSpacer(), homeToDuplicateBtn, homeToCleanupBtn, layout.NewSpacer()),
+		),
+	)
+	content = container.NewMax(homeView)
 
+	var homeTabBtn *widget.Button
 	var duplicateTabBtn *widget.Button
 	var cleanupTabBtn *widget.Button
 	updateTab := func(tab string) {
 		if tab == "cleanup" {
 			content.Objects = []fyne.CanvasObject{cleanupView}
+			homeTabBtn.Importance = widget.MediumImportance
 			duplicateTabBtn.Importance = widget.MediumImportance
 			cleanupTabBtn.Importance = widget.HighImportance
-		} else {
+		} else if tab == "duplicate" {
 			content.Objects = []fyne.CanvasObject{scanView}
+			homeTabBtn.Importance = widget.MediumImportance
 			duplicateTabBtn.Importance = widget.HighImportance
+			cleanupTabBtn.Importance = widget.MediumImportance
+		} else {
+			content.Objects = []fyne.CanvasObject{homeView}
+			homeTabBtn.Importance = widget.HighImportance
+			duplicateTabBtn.Importance = widget.MediumImportance
 			cleanupTabBtn.Importance = widget.MediumImportance
 		}
 		content.Refresh()
+		homeTabBtn.Refresh()
 		duplicateTabBtn.Refresh()
 		cleanupTabBtn.Refresh()
 	}
+	homeTabBtn = widget.NewButton(localize(healthState.Accessibility.Language, "home_tab"), func() {
+		updateTab("home")
+	})
 	duplicateTabBtn = widget.NewButton(localize(healthState.Accessibility.Language, "duplicate_tab"), func() {
 		updateTab("duplicate")
 	})
@@ -449,8 +491,11 @@ func main() {
 	settingsBtn := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
 		openSettingsHub(duplicateSettingsTabs, cleanupSettingsTabs, updateTab, &healthState.Accessibility, func() {
 			applyAccessibilityTheme(a, healthState.Accessibility)
+			homeTabBtn.SetText(localize(healthState.Accessibility.Language, "home_tab"))
 			duplicateTabBtn.SetText(localize(healthState.Accessibility.Language, "duplicate_tab"))
 			cleanupTabBtn.SetText(localize(healthState.Accessibility.Language, "cleanup_tab"))
+			homeToDuplicateBtn.SetText(localize(healthState.Accessibility.Language, "duplicate_tab"))
+			homeToCleanupBtn.SetText(localize(healthState.Accessibility.Language, "cleanup_tab"))
 			cacheSizeLabel.SetText(localize(healthState.Accessibility.Language, "cache_size") + ": ...")
 			tempSizeLabel.SetText(localize(healthState.Accessibility.Language, "temp_size") + ": ...")
 			dupCountLabel.SetText(fmt.Sprintf("%s: %d", localize(healthState.Accessibility.Language, "last_dups"), healthState.LastDuplicateGroups))
@@ -468,30 +513,23 @@ func main() {
 	topRow := container.NewBorder(
 		nil,
 		widget.NewSeparator(),
-		container.NewHBox(duplicateTabBtn, cleanupTabBtn),
+		container.NewHBox(homeTabBtn, duplicateTabBtn, cleanupTabBtn),
 		settingsBtn,
 		nil,
 	)
-	healthCard := container.NewBorder(
-		nil,
-		widget.NewSeparator(),
-		nil,
-		widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
-			refreshHealthCard()
-		}),
-		container.NewVBox(
-			widget.NewLabel(localize(healthState.Accessibility.Language, "system_health")),
-			container.NewGridWithColumns(2, cacheSizeLabel, tempSizeLabel),
-			container.NewGridWithColumns(2, dupCountLabel, lastCleanupLabel),
-			healthStatusLabel,
-		),
-	)
+	homeToDuplicateBtn.OnTapped = func() { updateTab("duplicate") }
+	homeToCleanupBtn.OnTapped = func() { updateTab("cleanup") }
 	if strings.EqualFold(strings.TrimSpace(healthState.Accessibility.StartPage), "Cleanup") {
 		updateTab("cleanup")
-	} else {
+	} else if strings.EqualFold(strings.TrimSpace(healthState.Accessibility.StartPage), "Duplicate Files") {
 		updateTab("duplicate")
+	} else {
+		updateTab("home")
 	}
 	if canvas := w.Canvas(); canvas != nil {
+		canvas.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.Key0, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) {
+			updateTab("home")
+		})
 		canvas.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.Key1, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) {
 			updateTab("duplicate")
 		})
@@ -505,7 +543,7 @@ func main() {
 			refreshHealthCard()
 		})
 	}
-	w.SetContent(container.NewBorder(container.NewVBox(topRow, healthCard), nil, nil, nil, content))
+	w.SetContent(container.NewBorder(topRow, nil, nil, nil, content))
 	refreshHealthCard()
 	w.ShowAndRun()
 }
@@ -550,7 +588,7 @@ func openSettingsHub(
 	hub := fyne.CurrentApp().NewWindow(localize(prefs.Language, "settings"))
 	hub.Resize(fyne.NewSize(900, 620))
 
-	landingSelect := widget.NewSelect([]string{"Duplicate Files", "Cleanup"}, nil)
+	landingSelect := widget.NewSelect([]string{"Home", "Duplicate Files", "Cleanup"}, nil)
 	landingSelect.SetSelected(prefs.StartPage)
 	themeSelect := widget.NewSelect([]string{"system", "dark", "light", "high-contrast-dark", "high-contrast-light"}, nil)
 	themeSelect.SetSelected(prefs.ThemeMode)
@@ -565,8 +603,10 @@ func openSettingsHub(
 		prefs.StartPage = strings.TrimSpace(landingSelect.Selected)
 		if landingSelect.Selected == "Cleanup" {
 			updateTab("cleanup")
-		} else {
+		} else if landingSelect.Selected == "Duplicate Files" {
 			updateTab("duplicate")
+		} else {
+			updateTab("home")
 		}
 		if onPrefsChanged != nil {
 			onPrefsChanged()
@@ -693,6 +733,7 @@ func localize(lang, key string) string {
 	lang = strings.ToLower(strings.TrimSpace(lang))
 	texts := map[string]map[string]string{
 		"en": {
+			"home_tab":      "Home",
 			"duplicate_tab": "Duplicate Files",
 			"cleanup_tab":   "Cleanup",
 			"system_health": "System Health",
@@ -709,6 +750,7 @@ func localize(lang, key string) string {
 			"home_page":     "Open this page first",
 		},
 		"fa": {
+			"home_tab":      "خانه",
 			"duplicate_tab": "فایل‌های تکراری",
 			"cleanup_tab":   "پاکسازی",
 			"system_health": "وضعیت سیستم",
