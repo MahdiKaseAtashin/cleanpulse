@@ -135,30 +135,34 @@ type ExecutionResult struct {
 }
 
 type RunReport struct {
-	GeneratedAt    time.Time           `json:"generated_at"`
-	OS             string              `json:"os"`
-	DryRun         bool                `json:"dry_run"`
-	MaxRisk        string              `json:"max_risk"`
-	Parallelism    int                 `json:"parallelism"`
-	Planned        int                 `json:"planned"`
-	Skipped        int                 `json:"skipped"`
-	Attempted      int                 `json:"attempted"`
-	ReclaimedBytes int64               `json:"reclaimed_bytes"`
-	FreedByVolume  map[string]int64    `json:"freed_by_volume,omitempty"`
-	Duration       time.Duration       `json:"duration"`
-	Results        []ResultReportEntry `json:"results"`
+	GeneratedAt       time.Time           `json:"generated_at"`
+	OS                string              `json:"os"`
+	DryRun            bool                `json:"dry_run"`
+	MaxRisk           string              `json:"max_risk"`
+	Parallelism       int                 `json:"parallelism"`
+	Planned           int                 `json:"planned"`
+	Skipped           int                 `json:"skipped"`
+	Attempted         int                 `json:"attempted"`
+	ReclaimedBytes    int64               `json:"reclaimed_bytes"`
+	PlannedByCategory map[string]int64    `json:"planned_by_category,omitempty"`
+	FreedByCategory   map[string]int64    `json:"freed_by_category,omitempty"`
+	PlannedByVolume   map[string]int64    `json:"planned_by_volume,omitempty"`
+	FreedByVolume     map[string]int64    `json:"freed_by_volume,omitempty"`
+	Duration          time.Duration       `json:"duration"`
+	Results           []ResultReportEntry `json:"results"`
 }
 
 type ResultReportEntry struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Category     string `json:"category"`
-	Risk         string `json:"risk"`
-	Attempted    bool   `json:"attempted"`
-	DeletedBytes int64  `json:"deleted_bytes"`
-	DeletedItems int    `json:"deleted_items"`
-	Skipped      bool   `json:"skipped"`
-	Error        string `json:"error,omitempty"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Category       string `json:"category"`
+	Risk           string `json:"risk"`
+	EstimatedBytes int64  `json:"estimated_bytes"`
+	Attempted      bool   `json:"attempted"`
+	DeletedBytes   int64  `json:"deleted_bytes"`
+	DeletedItems   int    `json:"deleted_items"`
+	Skipped        bool   `json:"skipped"`
+	Error          string `json:"error,omitempty"`
 }
 
 type Engine struct {

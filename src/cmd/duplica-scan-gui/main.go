@@ -1043,6 +1043,40 @@ func buildCleanupChartsView(report devcleanup.RunReport) fyne.CanvasObject {
 	for _, category := range categories {
 		categorySection.Add(buildHorizontalBar(category, categoryBytes[category], maxBytes, color.RGBA{R: 33, G: 150, B: 243, A: 255}, formatBytes(categoryBytes[category])))
 	}
+
+	compareCategorySection := container.NewVBox(widget.NewLabel("Before vs after by type"))
+	compareCategoryKeys := make([]string, 0, len(report.PlannedByCategory))
+	for category := range report.PlannedByCategory {
+		compareCategoryKeys = append(compareCategoryKeys, category)
+	}
+	sort.Strings(compareCategoryKeys)
+	if len(compareCategoryKeys) == 0 {
+		compareCategorySection.Add(widget.NewLabel("No type-level size comparison data available for this run."))
+	} else {
+		maxCompareCategory := int64(1)
+		for _, category := range compareCategoryKeys {
+			before := report.PlannedByCategory[category]
+			after := before - report.FreedByCategory[category]
+			if after < 0 {
+				after = 0
+			}
+			if before > maxCompareCategory {
+				maxCompareCategory = before
+			}
+			if after > maxCompareCategory {
+				maxCompareCategory = after
+			}
+		}
+		for _, category := range compareCategoryKeys {
+			before := report.PlannedByCategory[category]
+			after := before - report.FreedByCategory[category]
+			if after < 0 {
+				after = 0
+			}
+			compareCategorySection.Add(buildBeforeAfterBars(category, before, after, maxCompareCategory))
+		}
+	}
+
 	volumeSection := container.NewVBox(widget.NewLabel("Freed space by drive"))
 	volumeKeys := make([]string, 0, len(report.FreedByVolume))
 	maxVolumeBytes := int64(1)
@@ -1061,13 +1095,62 @@ func buildCleanupChartsView(report devcleanup.RunReport) fyne.CanvasObject {
 		}
 	}
 
+	compareVolumeSection := container.NewVBox(widget.NewLabel("Before vs after by drive"))
+	compareVolumeKeys := make([]string, 0, len(report.PlannedByVolume))
+	for volume := range report.PlannedByVolume {
+		compareVolumeKeys = append(compareVolumeKeys, volume)
+	}
+	sort.Strings(compareVolumeKeys)
+	if len(compareVolumeKeys) == 0 {
+		compareVolumeSection.Add(widget.NewLabel("No drive-level size comparison data available for this run."))
+	} else {
+		maxCompareVolume := int64(1)
+		for _, volume := range compareVolumeKeys {
+			before := report.PlannedByVolume[volume]
+			after := before - report.FreedByVolume[volume]
+			if after < 0 {
+				after = 0
+			}
+			if before > maxCompareVolume {
+				maxCompareVolume = before
+			}
+			if after > maxCompareVolume {
+				maxCompareVolume = after
+			}
+		}
+		for _, volume := range compareVolumeKeys {
+			before := report.PlannedByVolume[volume]
+			after := before - report.FreedByVolume[volume]
+			if after < 0 {
+				after = 0
+			}
+			compareVolumeSection.Add(buildBeforeAfterBars(volume, before, after, maxCompareVolume))
+		}
+	}
+
 	return container.NewVScroll(container.NewVBox(
 		statusSection,
 		widget.NewSeparator(),
 		categorySection,
 		widget.NewSeparator(),
+		compareCategorySection,
+		widget.NewSeparator(),
 		volumeSection,
+		widget.NewSeparator(),
+		compareVolumeSection,
 	))
+}
+
+func buildBeforeAfterBars(name string, before int64, after int64, max int64) fyne.CanvasObject {
+	beforeLine := buildHorizontalBar("Before", before, max, color.RGBA{R: 120, G: 144, B: 156, A: 255}, formatBytes(before))
+	afterLine := buildHorizontalBar("After", after, max, color.RGBA{R: 76, G: 175, B: 80, A: 255}, formatBytes(after))
+	title := widget.NewLabel(name)
+	title.Alignment = fyne.TextAlignLeading
+	return container.NewVBox(
+		title,
+		container.NewPadded(beforeLine),
+		container.NewPadded(afterLine),
+	)
 }
 
 func buildHorizontalBar(name string, value int64, max int64, barColor color.Color, valueLabel string) fyne.CanvasObject {

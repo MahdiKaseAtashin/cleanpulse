@@ -31,20 +31,32 @@ func (e *Engine) Run(ctx context.Context, cfg Config) (RunReport, error) {
 	results := e.execute(ctx, plan, cfg)
 
 	report := RunReport{
-		GeneratedAt:   time.Now(),
-		OS:            env.OS,
-		DryRun:        cfg.DryRun,
-		MaxRisk:       cfg.MaxRisk.String(),
-		Parallelism:   cfg.Parallelism,
-		Planned:       len(plan),
-		FreedByVolume: map[string]int64{},
-		Duration:      time.Since(start),
+		GeneratedAt:       time.Now(),
+		OS:                env.OS,
+		DryRun:            cfg.DryRun,
+		MaxRisk:           cfg.MaxRisk.String(),
+		Parallelism:       cfg.Parallelism,
+		Planned:           len(plan),
+		PlannedByCategory: map[string]int64{},
+		FreedByCategory:   map[string]int64{},
+		PlannedByVolume:   map[string]int64{},
+		FreedByVolume:     map[string]int64{},
+		Duration:          time.Since(start),
 	}
 
 	for _, item := range plan {
 		if item.SkippedReason != "" || item.Err != nil {
 			report.Skipped++
 		}
+		report.PlannedByCategory[item.Task.Category] += item.EstimatedSize
+		volumes := volumesForTask(item.Task)
+		for volume, portion := range splitBytesAcrossVolumes(item.EstimatedSize, volumes) {
+			report.PlannedByVolume[volume] += portion
+		}
+	}
+	estimatedByID := make(map[string]int64, len(plan))
+	for _, item := range plan {
+		estimatedByID[item.Task.ID] = item.EstimatedSize
 	}
 	for _, result := range results {
 		if result.Attempted {
@@ -53,19 +65,22 @@ func (e *Engine) Run(ctx context.Context, cfg Config) (RunReport, error) {
 		// Reclaimed bytes should only include successful actions.
 		if result.Attempted && result.Err == nil {
 			report.ReclaimedBytes += result.DeletedBytes
-			for _, volume := range volumesForTask(result.Task) {
-				report.FreedByVolume[volume] += result.DeletedBytes
+			report.FreedByCategory[result.Task.Category] += result.DeletedBytes
+			volumes := volumesForTask(result.Task)
+			for volume, portion := range splitBytesAcrossVolumes(result.DeletedBytes, volumes) {
+				report.FreedByVolume[volume] += portion
 			}
 		}
 		entry := ResultReportEntry{
-			ID:           result.Task.ID,
-			Name:         result.Task.Name,
-			Category:     result.Task.Category,
-			Risk:         result.Task.Risk.String(),
-			Attempted:    result.Attempted,
-			DeletedBytes: result.DeletedBytes,
-			DeletedItems: result.DeletedItems,
-			Skipped:      result.Skipped,
+			ID:             result.Task.ID,
+			Name:           result.Task.Name,
+			Category:       result.Task.Category,
+			Risk:           result.Task.Risk.String(),
+			EstimatedBytes: estimatedByID[result.Task.ID],
+			Attempted:      result.Attempted,
+			DeletedBytes:   result.DeletedBytes,
+			DeletedItems:   result.DeletedItems,
+			Skipped:        result.Skipped,
 		}
 		if result.Err != nil {
 			entry.Error = result.Err.Error()
@@ -73,6 +88,27 @@ func (e *Engine) Run(ctx context.Context, cfg Config) (RunReport, error) {
 		report.Results = append(report.Results, entry)
 	}
 	return report, nil
+}
+
+func splitBytesAcrossVolumes(total int64, volumes []string) map[string]int64 {
+	out := make(map[string]int64)
+	if total <= 0 {
+		return out
+	}
+	if len(volumes) == 0 {
+		out["unknown"] = total
+		return out
+	}
+	base := total / int64(len(volumes))
+	remainder := total % int64(len(volumes))
+	for i, volume := range volumes {
+		share := base
+		if int64(i) < remainder {
+			share++
+		}
+		out[volume] += share
+	}
+	return out
 }
 
 func volumesForTask(task CleanupTask) []string {
