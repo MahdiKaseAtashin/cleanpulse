@@ -881,6 +881,16 @@ func showCleanupResults(parent fyne.Window, root *fyne.Container, backView fyne.
 		report.Duration.Round(time.Millisecond),
 	))
 	summary.Wrapping = fyne.TextWrapWord
+	recommendations := buildCleanupRecommendations(report)
+	recommendationItems := make([]fyne.CanvasObject, 0, len(recommendations)+1)
+	recommendationItems = append(recommendationItems, widget.NewLabel("Smart recommendations"))
+	for _, rec := range recommendations {
+		recLabel := widget.NewLabel("• " + rec)
+		recLabel.Wrapping = fyne.TextWrapWord
+		recLabel.Alignment = fyne.TextAlignLeading
+		recommendationItems = append(recommendationItems, recLabel)
+	}
+	recommendationBox := container.NewVBox(recommendationItems...)
 
 	type cleanupResultRow struct {
 		Status    string
@@ -1008,6 +1018,7 @@ func showCleanupResults(parent fyne.Window, root *fyne.Container, backView fyne.
 		container.NewVBox(
 			widget.NewLabel("Cleanup Results"),
 			summary,
+			recommendationBox,
 			container.NewHBox(widget.NewLabel("View:"), tableViewBtn, chartsViewBtn),
 		),
 		container.NewVBox(backBtn),
@@ -1018,6 +1029,70 @@ func showCleanupResults(parent fyne.Window, root *fyne.Container, backView fyne.
 	applyView("table")
 	root.Objects = []fyne.CanvasObject{resultView}
 	root.Refresh()
+}
+
+func buildCleanupRecommendations(report devcleanup.RunReport) []string {
+	const bigThreshold = int64(1 << 30) // 1 GB
+	const mediumThreshold = int64(512 << 20)
+
+	recs := make([]string, 0, 6)
+	var topBrowserName string
+	var topBrowserBytes int64
+	var topSafeName string
+	var topSafeBytes int64
+	aggressiveCount := 0
+	errorCount := 0
+
+	for _, result := range report.Results {
+		if result.Error != "" {
+			errorCount++
+		}
+		estimated := result.EstimatedBytes
+		if estimated <= 0 {
+			continue
+		}
+		risk := strings.ToLower(strings.TrimSpace(result.Risk))
+		category := strings.ToLower(strings.TrimSpace(result.Category))
+
+		if category == "browser" && estimated > topBrowserBytes {
+			topBrowserBytes = estimated
+			topBrowserName = result.Name
+		}
+		if (risk == "safe" || risk == "moderate") && estimated > topSafeBytes {
+			topSafeBytes = estimated
+			topSafeName = result.Name
+		}
+		if risk == "aggressive" && estimated >= mediumThreshold {
+			aggressiveCount++
+			if strings.Contains(strings.ToLower(result.Name), "docker") {
+				recs = append(recs, fmt.Sprintf("%s may free %s, but it is aggressive. Use safety backup mode if unsure.", result.Name, formatBytes(estimated)))
+			}
+		}
+	}
+
+	if topBrowserName != "" && topBrowserBytes >= mediumThreshold {
+		verdict := "worth cleaning"
+		if topBrowserBytes >= bigThreshold {
+			verdict = "safe to clean for quick space recovery"
+		}
+		recs = append(recs, fmt.Sprintf("%s is %s and is generally %s.", topBrowserName, formatBytes(topBrowserBytes), verdict))
+	}
+	if topSafeName != "" && topSafeBytes >= bigThreshold {
+		recs = append(recs, fmt.Sprintf("%s is a large low-risk target (%s).", topSafeName, formatBytes(topSafeBytes)))
+	}
+	if aggressiveCount > 0 {
+		recs = append(recs, fmt.Sprintf("%d aggressive cleanup target(s) detected. Review details before running permanent delete.", aggressiveCount))
+	}
+	if errorCount > 0 {
+		recs = append(recs, fmt.Sprintf("%d task(s) had errors. Close related apps and retry, or use safety backup mode.", errorCount))
+	}
+	if len(recs) == 0 {
+		recs = append(recs, "No high-impact recommendations found. Current cleanup profile already looks conservative.")
+	}
+	if len(recs) > 5 {
+		recs = recs[:5]
+	}
+	return recs
 }
 
 func buildCleanupChartsView(report devcleanup.RunReport) fyne.CanvasObject {
