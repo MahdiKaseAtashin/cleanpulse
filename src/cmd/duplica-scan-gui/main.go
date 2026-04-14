@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	_ "embed"
 	"fmt"
 	"image/color"
@@ -49,6 +50,38 @@ func main() {
 
 	var scanView fyne.CanvasObject
 	var content *fyne.Container
+	healthState, _ := loadGUIHealthState()
+
+	cacheSizeLabel := widget.NewLabel("Cache size: calculating...")
+	tempSizeLabel := widget.NewLabel("Temp size: calculating...")
+	dupCountLabel := widget.NewLabel(fmt.Sprintf("Last duplicate groups: %d", healthState.LastDuplicateGroups))
+	lastCleanupLabel := widget.NewLabel("Last cleanup: never")
+	if !healthState.LastCleanupAt.IsZero() {
+		lastCleanupLabel.SetText("Last cleanup: " + healthState.LastCleanupAt.Local().Format("2006-01-02 15:04"))
+	}
+	healthStatusLabel := widget.NewLabel("")
+
+	refreshHealthCard := func() {
+		healthStatusLabel.SetText("Refreshing system health...")
+		go func() {
+			cacheBytes, tempBytes, err := estimateSystemHealth()
+			fyne.Do(func() {
+				if err != nil {
+					healthStatusLabel.SetText("Health refresh had partial errors: " + err.Error())
+				} else {
+					healthStatusLabel.SetText("System health updated")
+				}
+				cacheSizeLabel.SetText("Cache size: " + formatBytes(cacheBytes))
+				tempSizeLabel.SetText("Temp size: " + formatBytes(tempBytes))
+				dupCountLabel.SetText(fmt.Sprintf("Last duplicate groups: %d", healthState.LastDuplicateGroups))
+				if healthState.LastCleanupAt.IsZero() {
+					lastCleanupLabel.SetText("Last cleanup: never")
+				} else {
+					lastCleanupLabel.SetText("Last cleanup: " + healthState.LastCleanupAt.Local().Format("2006-01-02 15:04"))
+				}
+			})
+		}()
+	}
 
 	pathEntry := widget.NewEntry()
 	pathEntry.SetPlaceHolder("Choose a folder to scan")
@@ -255,6 +288,9 @@ func main() {
 			})
 
 			appendOutput(fmt.Sprintf("Duplicate groups found: %d", len(groups)))
+			healthState.LastDuplicateGroups = len(groups)
+			healthState.LastDuplicateAt = time.Now()
+			_ = saveGUIHealthState(healthState)
 			appendOutput(fmt.Sprintf("Scanner non-fatal errors: %d", len(scanSummary.Errors)))
 			appendOutput(fmt.Sprintf("Hash non-fatal errors: %d", len(hashErrors)))
 			appendOutput("")
@@ -362,7 +398,16 @@ func main() {
 		nil,
 		container.NewVScroll(output),
 	)
-	cleanupView, cleanupSettingsTabs := buildCleanupView(w)
+	cleanupView, cleanupSettingsTabs := buildCleanupView(w, func(report devcleanup.RunReport) {
+		healthState.LastCleanupAt = time.Now()
+		_ = saveGUIHealthState(healthState)
+		fyne.Do(func() {
+			dupCountLabel.SetText(fmt.Sprintf("Last duplicate groups: %d", healthState.LastDuplicateGroups))
+			lastCleanupLabel.SetText("Last cleanup: " + healthState.LastCleanupAt.Local().Format("2006-01-02 15:04"))
+		})
+		_ = report
+		refreshHealthCard()
+	})
 	content = container.NewMax(scanView)
 
 	var duplicateTabBtn *widget.Button
@@ -399,8 +444,23 @@ func main() {
 		settingsBtn,
 		nil,
 	)
+	healthCard := container.NewBorder(
+		nil,
+		widget.NewSeparator(),
+		nil,
+		widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), func() {
+			refreshHealthCard()
+		}),
+		container.NewVBox(
+			widget.NewLabel("System Health"),
+			container.NewGridWithColumns(2, cacheSizeLabel, tempSizeLabel),
+			container.NewGridWithColumns(2, dupCountLabel, lastCleanupLabel),
+			healthStatusLabel,
+		),
+	)
 	updateTab("duplicate")
-	w.SetContent(container.NewBorder(topRow, nil, nil, nil, content))
+	w.SetContent(container.NewBorder(container.NewVBox(topRow, healthCard), nil, nil, nil, content))
+	refreshHealthCard()
 	w.ShowAndRun()
 }
 
@@ -519,6 +579,110 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
+type guiHealthState struct {
+	LastCleanupAt       time.Time `json:"last_cleanup_at"`
+	LastDuplicateAt     time.Time `json:"last_duplicate_at"`
+	LastDuplicateGroups int       `json:"last_duplicate_groups"`
+}
+
+func guiHealthStatePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".duplica-scan", "gui-health.json"), nil
+}
+
+func loadGUIHealthState() (guiHealthState, error) {
+	path, err := guiHealthStatePath()
+	if err != nil {
+		return guiHealthState{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return guiHealthState{}, nil
+		}
+		return guiHealthState{}, err
+	}
+	var state guiHealthState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return guiHealthState{}, err
+	}
+	return state, nil
+}
+
+func saveGUIHealthState(state guiHealthState) error {
+	path, err := guiHealthStatePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
+}
+
+func estimateSystemHealth() (int64, int64, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return 0, 0, err
+	}
+	cachePaths := []string{
+		filepath.Join(home, ".cache"),
+		filepath.Join(home, ".npm"),
+		filepath.Join(home, ".nuget"),
+		filepath.Join(home, ".gradle"),
+		filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Cache"),
+		filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data", "Default", "Cache"),
+	}
+	tempPaths := []string{
+		os.TempDir(),
+		filepath.Join(home, "AppData", "Local", "Temp"),
+	}
+	cacheBytes, cacheErr := sumExistingDirSizes(cachePaths)
+	tempBytes, tempErr := sumExistingDirSizes(tempPaths)
+	if cacheErr != nil {
+		return cacheBytes, tempBytes, cacheErr
+	}
+	return cacheBytes, tempBytes, tempErr
+}
+
+func sumExistingDirSizes(paths []string) (int64, error) {
+	seen := make(map[string]struct{}, len(paths))
+	var total int64
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		clean := filepath.Clean(p)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		info, err := os.Stat(clean)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		err = filepath.Walk(clean, func(_ string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil || info == nil || info.IsDir() {
+				return nil
+			}
+			total += info.Size()
+			return nil
+		})
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
 func parseExtensions(raw string) map[string]struct{} {
 	return parseCSVSet(raw, func(v string) string {
 		v = strings.ToLower(strings.TrimSpace(v))
@@ -590,7 +754,7 @@ func renderGroupsPreview(groups []duplicates.Group, maxGroups int, maxFilesPerGr
 	return b.String()
 }
 
-func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, fyne.CanvasObject) {
+func buildCleanupView(parent fyne.Window, onCleanupFinished func(devcleanup.RunReport)) (fyne.CanvasObject, fyne.CanvasObject) {
 	var mainView fyne.CanvasObject
 	var cleanupRoot *fyne.Container
 
@@ -794,6 +958,9 @@ func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, fyne.CanvasObject)
 				hasReport = true
 				runBtn.Enable()
 				status.SetText("Cleanup finished")
+				if onCleanupFinished != nil {
+					onCleanupFinished(report)
+				}
 				showCleanupResults(
 					parent,
 					cleanupRoot,
