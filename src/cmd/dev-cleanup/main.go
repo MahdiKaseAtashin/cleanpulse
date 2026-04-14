@@ -15,7 +15,7 @@ import (
 
 func main() {
 	maxRisk := flag.String("risk", "safe", "Maximum risk level: safe|moderate|aggressive")
-	dryRun := flag.Bool("dry-run", true, "Dry run mode (plan only)")
+	dryRun := flag.Bool("dry-run", false, "Dry run mode (plan only)")
 	yes := flag.Bool("yes", false, "Skip interactive confirmations")
 	verbose := flag.Bool("verbose", false, "Verbose logging")
 	parallelism := flag.Int("parallelism", runtime.NumCPU(), "Parallel workers for size planning")

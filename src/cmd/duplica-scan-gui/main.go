@@ -62,7 +62,7 @@ func main() {
 	maxSizeEntry.SetText("0")
 
 	dryRunCheck := widget.NewCheck("Dry run (no deletion)", nil)
-	dryRunCheck.SetChecked(true)
+	dryRunCheck.SetChecked(false)
 
 	autoSelectSelect := widget.NewSelect([]string{"none", "newest", "oldest"}, nil)
 	autoSelectSelect.SetSelected("none")
@@ -325,13 +325,13 @@ func main() {
 	cleanupView, openCleanupSettings := buildCleanupView(w)
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Duplicate Files", scanView),
-		container.NewTabItem("Dev Cleanup", cleanupView),
+		container.NewTabItem("Cleanup", cleanupView),
 	)
 	tabs.SetTabLocation(container.TabLocationTop)
 
 	settingsMenu := fyne.NewMenu("Settings",
 		fyne.NewMenuItem("Duplicate Scan...", openDuplicateSettings),
-		fyne.NewMenuItem("Dev Cleanup...", openCleanupSettings),
+		fyne.NewMenuItem("Cleanup...", openCleanupSettings),
 	)
 	w.SetMainMenu(fyne.NewMainMenu(settingsMenu))
 	w.SetContent(tabs)
@@ -430,10 +430,13 @@ func renderGroups(groups []duplicates.Group) string {
 }
 
 func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, func()) {
+	var mainView fyne.CanvasObject
+	var cleanupRoot *fyne.Container
+
 	riskSelect := widget.NewSelect([]string{"safe", "moderate", "aggressive"}, nil)
 	riskSelect.SetSelected("safe")
 	dryRun := widget.NewCheck("Dry run (recommended)", nil)
-	dryRun.SetChecked(true)
+	dryRun.SetChecked(false)
 	processAware := widget.NewCheck("Skip cleanup when related apps are running", nil)
 	processAware.SetChecked(true)
 	assumeYes := widget.NewCheck("Assume yes (no per-task confirmations)", nil)
@@ -476,6 +479,8 @@ func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, func()) {
 	output := widget.NewMultiLineEntry()
 	output.Wrapping = fyne.TextWrapWord
 	output.Disable()
+	lastReport := devcleanup.RunReport{}
+	hasReport := false
 
 	appendOutput := func(text string) {
 		fyne.Do(func() {
@@ -560,8 +565,17 @@ func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, func()) {
 			}
 
 			fyne.Do(func() {
+				lastReport = report
+				hasReport = true
 				runBtn.Enable()
 				status.SetText("Cleanup finished")
+				showCleanupResults(
+					parent,
+					cleanupRoot,
+					mainView,
+					lastReport,
+					output.Text,
+				)
 			})
 		}()
 	})
@@ -592,15 +606,25 @@ func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, func()) {
 			settingsForm,
 		))
 		settingsContent.SetMinSize(fyne.NewSize(700, 520))
-		dialog.NewCustom("Dev Cleanup Settings", "Close", settingsContent, parent).Show()
+		dialog.NewCustom("Cleanup Settings", "Close", settingsContent, parent).Show()
 	}
 
-	view := container.NewBorder(
+	mainView = container.NewBorder(
 		container.NewVBox(
-			widget.NewLabel("Developer cleanup and temp-cache maintenance"),
+			widget.NewLabel("Cleanup and temp-cache maintenance"),
 			widget.NewLabel("Basic mode: choose an optional path and run."),
 			container.NewBorder(nil, nil, nil, targetBrowseBtn, targetPathEntry),
-			container.NewHBox(runBtn, quickTempBtn),
+			container.NewHBox(
+				runBtn,
+				quickTempBtn,
+				widget.NewButton("View Last Result", func() {
+					if !hasReport {
+						dialog.ShowInformation("No results yet", "Run cleanup first to view results.", parent)
+						return
+					}
+					showCleanupResults(parent, cleanupRoot, mainView, lastReport, output.Text)
+				}),
+			),
 			status,
 		),
 		nil,
@@ -608,7 +632,79 @@ func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, func()) {
 		nil,
 		container.NewVScroll(output),
 	)
-	return view, openSettings
+	cleanupRoot = container.NewMax(mainView)
+	return cleanupRoot, openSettings
+}
+
+func showCleanupResults(parent fyne.Window, root *fyne.Container, backView fyne.CanvasObject, report devcleanup.RunReport, runLog string) {
+	summary := widget.NewLabel(fmt.Sprintf(
+		"Planned: %d | Attempted: %d | Skipped: %d | Reclaimed: %d bytes | Duration: %s",
+		report.Planned,
+		report.Attempted,
+		report.Skipped,
+		report.ReclaimedBytes,
+		report.Duration.Round(time.Millisecond),
+	))
+
+	rows := make([]string, 0, len(report.Results))
+	for _, result := range report.Results {
+		status := "skipped"
+		if result.Attempted && result.Error == "" {
+			status = "ok"
+		}
+		if result.Error != "" {
+			status = "error"
+		}
+		rows = append(rows, fmt.Sprintf("[%s] %s (%s, %s) items=%d bytes=%d %s",
+			status,
+			result.Name,
+			result.Category,
+			result.Risk,
+			result.DeletedItems,
+			result.DeletedBytes,
+			result.Error,
+		))
+	}
+	if len(rows) == 0 {
+		rows = append(rows, "No task results.")
+	}
+	resultList := widget.NewList(
+		func() int { return len(rows) },
+		func() fyne.CanvasObject {
+			l := widget.NewLabel("")
+			l.Wrapping = fyne.TextWrapWord
+			return l
+		},
+		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			obj.(*widget.Label).SetText(rows[id])
+		},
+	)
+
+	logOutput := widget.NewMultiLineEntry()
+	logOutput.SetText(runLog)
+	logOutput.Disable()
+	logOutput.Wrapping = fyne.TextWrapWord
+
+	backBtn := widget.NewButton("Back to Cleanup", func() {
+		root.Objects = []fyne.CanvasObject{backView}
+		root.Refresh()
+	})
+
+	resultView := container.NewBorder(
+		container.NewVBox(
+			widget.NewLabel("Cleanup Results"),
+			summary,
+		),
+		container.NewVBox(backBtn),
+		nil,
+		nil,
+		container.NewVSplit(
+			container.NewVScroll(resultList),
+			container.NewVScroll(logOutput),
+		),
+	)
+	root.Objects = []fyne.CanvasObject{resultView}
+	root.Refresh()
 }
 
 func parsePatternRootsArg(raw string) map[string][]string {

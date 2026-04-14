@@ -24,7 +24,7 @@ import (
 func main() {
 	rootPath := flag.String("path", "", "Directory (or drive root) to scan (required)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
-	dryRun := flag.Bool("dry-run", true, "Dry run mode: report duplicates without deletion")
+	dryRun := flag.Bool("dry-run", false, "Dry run mode: report duplicates without deletion")
 	hashWorkers := flag.Int("hash-workers", runtime.NumCPU(), "Number of concurrent hashing workers")
 	excludeExts := flag.String("exclude-exts", "", "Comma-separated file extensions to skip (example: .log,.tmp)")
 	excludeDirs := flag.String("exclude-dirs", "", "Comma-separated directory names to skip (example: node_modules,.git)")
