@@ -235,3 +235,25 @@ Note: the GUI command is gated behind the `gui` build tag so CLI-only environmen
 ```bash
 go test ./...
 ```
+
+## Developer Cleanup CLI
+
+A production-oriented cleanup command is available:
+
+```bash
+go run ./src/cmd/dev-cleanup -dry-run=true -risk=safe -report ./reports/dev-cleanup.json
+```
+
+Common flags:
+
+- `-risk=safe|moderate|aggressive`
+- `-dry-run=true|false`
+- `-yes=true` to skip interactive confirmations
+- `-parallelism=<n>`
+- `-min-age-hours=<n>`
+- `-include-categories=package-manager,ide`
+- `-include-ids=<task-id1,task-id2>`
+- `-exclude-ids=<task-id1,task-id2>`
+- `-config=./cleanup-config.json`
+
+See `docs/dev-cleanup.md` for architecture and strategy guidance.
