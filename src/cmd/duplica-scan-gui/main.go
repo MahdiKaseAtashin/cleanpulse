@@ -1148,18 +1148,22 @@ func buildStatTile(title string, value *widget.Label, accent color.Color) fyne.C
 	bg := canvas.NewRectangle(color.RGBA{R: 31, G: 36, B: 46, A: 255})
 	bg.CornerRadius = 8
 	bar := canvas.NewRectangle(accent)
-	bar.SetMinSize(fyne.NewSize(4, 54))
+	bar.SetMinSize(fyne.NewSize(4, 62))
 	titleLabel := widget.NewLabel(title)
 	titleLabel.TextStyle = fyne.TextStyle{Bold: true}
+	titleLabel.Alignment = fyne.TextAlignLeading
 	value.Alignment = fyne.TextAlignLeading
 	body := container.NewBorder(
 		nil,
 		nil,
-		bar,
+		container.NewGridWrap(fyne.NewSize(8, 70), container.NewCenter(bar)),
 		nil,
-		container.NewPadded(container.NewVBox(titleLabel, value)),
+		container.NewPadded(container.NewGridWrap(
+			fyne.NewSize(240, 70),
+			container.NewCenter(container.NewVBox(titleLabel, value)),
+		)),
 	)
-	return container.NewStack(bg, body)
+	return container.NewGridWrap(fyne.NewSize(300, 82), container.NewStack(bg, body))
 }
 
 func buildDashboardMiniCharts(cacheBytes int64, tempBytes int64, duplicateGroups int, lastCleanupAt time.Time) fyne.CanvasObject {
@@ -1207,11 +1211,15 @@ func buildDashboardMiniCharts(cacheBytes int64, tempBytes int64, duplicateGroups
 		bg.SetMinSize(fyne.NewSize(width, 14))
 		fg := canvas.NewRectangle(m.color)
 		bar := container.NewStack(bg, container.NewGridWrap(fyne.NewSize(fill, 14), fg))
+		nameLabel := widget.NewLabel(m.name)
+		nameLabel.Alignment = fyne.TextAlignLeading
+		valueLabel := widget.NewLabel(m.label)
+		valueLabel.Alignment = fyne.TextAlignLeading
 		rows = append(rows, container.NewBorder(
 			nil, nil,
-			container.NewGridWrap(fyne.NewSize(95, 20), widget.NewLabel(m.name)),
-			container.NewGridWrap(fyne.NewSize(95, 20), widget.NewLabel(m.label)),
-			container.NewGridWrap(fyne.NewSize(width, 20), bar),
+			container.NewGridWrap(fyne.NewSize(100, 24), container.NewCenter(nameLabel)),
+			container.NewGridWrap(fyne.NewSize(100, 24), container.NewCenter(valueLabel)),
+			container.NewGridWrap(fyne.NewSize(width, 24), container.NewCenter(bar)),
 		))
 	}
 	return container.NewVBox(rows...)
