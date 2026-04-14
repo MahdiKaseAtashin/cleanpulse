@@ -1361,6 +1361,7 @@ func parseCSVSet(raw string, normalizer func(string) string) map[string]struct{}
 
 func buildNetworkOptimizerView(parent fyne.Window) (fyne.CanvasObject, fyne.CanvasObject) {
 	actions := networkopt.AvailableActions()
+	profiles := networkopt.AvailableProfiles()
 	dryRun := widget.NewCheck("Dry run (preview only)", nil)
 	dryRun.SetChecked(false)
 	timeoutSelect := widget.NewSelect([]string{"15", "30", "60", "120"}, nil)
@@ -1378,6 +1379,7 @@ func buildNetworkOptimizerView(parent fyne.Window) (fyne.CanvasObject, fyne.Canv
 	output.Disable()
 	selected := make(map[string]bool, len(actions))
 	checksByID := make(map[string]*widget.Check, len(actions))
+	profileByName := make(map[string]networkopt.Profile, len(profiles))
 	actionRows := make([]fyne.CanvasObject, 0, len(actions))
 	applySelectionMode := func(mode string) {
 		normalized := strings.ToLower(strings.TrimSpace(mode))
@@ -1411,6 +1413,13 @@ func buildNetworkOptimizerView(parent fyne.Window) (fyne.CanvasObject, fyne.Canv
 		actionRows = append(actionRows, container.NewVBox(check, desc, widget.NewSeparator()))
 	}
 	applySelectionMode(autoSelect.Selected)
+	profileNames := []string{"None"}
+	for _, p := range profiles {
+		profileNames = append(profileNames, p.Name)
+		profileByName[p.Name] = p
+	}
+	profileSelect := widget.NewSelect(profileNames, nil)
+	profileSelect.SetSelected("None")
 
 	var runBtn *widget.Button
 	runBtn = widget.NewButtonWithIcon("Run Network Optimizer", theme.ComputerIcon(), func() {
@@ -1466,6 +1475,26 @@ func buildNetworkOptimizerView(parent fyne.Window) (fyne.CanvasObject, fyne.Canv
 		applySelectionMode(presetSelect.Selected)
 		status.SetText("Preset applied: " + strings.TrimSpace(presetSelect.Selected))
 	})
+	applyProfileBtn := widget.NewButton("Apply Profile", func() {
+		selectedName := strings.TrimSpace(profileSelect.Selected)
+		if selectedName == "" || selectedName == "None" {
+			status.SetText("No profile selected.")
+			return
+		}
+		profile, ok := profileByName[selectedName]
+		if !ok {
+			status.SetText("Profile not found.")
+			return
+		}
+		applySelectionMode("none")
+		for _, actionID := range profile.ActionIDs {
+			selected[actionID] = true
+			if check, exists := checksByID[actionID]; exists {
+				check.SetChecked(true)
+			}
+		}
+		status.SetText("Profile applied: " + profile.Name)
+	})
 
 	mainView := container.NewBorder(
 		container.NewVBox(
@@ -1473,10 +1502,11 @@ func buildNetworkOptimizerView(parent fyne.Window) (fyne.CanvasObject, fyne.Canv
 			widget.NewLabel("Fix common network issues safely with one click."),
 			dryRun,
 			buildCustomSettingsForm([]settingsField{
+				{Label: "Profile template", Control: profileSelect},
 				{Label: "Action preset", Control: presetSelect},
 				{Label: "Command timeout (seconds)", Control: timeoutSelect},
 			}),
-			container.NewHBox(applyPresetBtn),
+			container.NewHBox(applyPresetBtn, applyProfileBtn),
 			runBtn,
 			status,
 			progress,
@@ -1500,10 +1530,15 @@ func buildNetworkOptimizerView(parent fyne.Window) (fyne.CanvasObject, fyne.Canv
 		presetSelect.SetSelected(strings.TrimSpace(value))
 	})
 	presetDefaultSelect.SetSelected(presetSelect.Selected)
+	profileDefaultSelect := widget.NewSelect(profileNames, func(value string) {
+		profileSelect.SetSelected(strings.TrimSpace(value))
+	})
+	profileDefaultSelect.SetSelected(profileSelect.Selected)
 	settingsView := container.NewPadded(container.NewVBox(
 		widget.NewLabel("Network Optimizer Settings"),
 		widget.NewLabel("Configure defaults for network fixes."),
 		buildCustomSettingsForm([]settingsField{
+			{Label: "Default profile", Control: profileDefaultSelect},
 			{Label: "Default action selection", Control: autoSelect},
 			{Label: "Default timeout (seconds)", Control: timeoutDefaultSelect},
 			{Label: "Default preset", Control: presetDefaultSelect},
