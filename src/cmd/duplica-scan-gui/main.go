@@ -25,6 +25,7 @@ import (
 	"duplica-scan/src/internal/duplicates"
 	"duplica-scan/src/internal/hash"
 	"duplica-scan/src/internal/model"
+	"duplica-scan/src/internal/networkopt"
 	"duplica-scan/src/internal/report"
 	"duplica-scan/src/internal/scanner"
 	"duplica-scan/src/internal/selection"
@@ -53,6 +54,7 @@ func main() {
 
 	var scanView fyne.CanvasObject
 	var homeView fyne.CanvasObject
+	var networkView fyne.CanvasObject
 	var content *fyne.Container
 	healthState, _ := loadGUIHealthState()
 	if strings.TrimSpace(healthState.Accessibility.Language) == "" {
@@ -434,10 +436,13 @@ func main() {
 		_ = report
 		refreshHealthCard()
 	})
+	networkView, networkSettings := buildNetworkOptimizerView(w)
 	homeToDuplicateBtn := newHoverButton(localize(healthState.Accessibility.Language, "duplicate_tab"), func() {}, nil)
 	homeToCleanupBtn := newHoverButton(localize(healthState.Accessibility.Language, "cleanup_tab"), func() {}, nil)
+	homeToNetworkBtn := newHoverButton(localize(healthState.Accessibility.Language, "network_tab"), func() {}, nil)
 	homeToDuplicateBtn.Importance = widget.HighImportance
 	homeToCleanupBtn.Importance = widget.HighImportance
+	homeToNetworkBtn.Importance = widget.HighImportance
 	heroTitle := widget.NewLabel("Smarter storage cleanup")
 	heroTitle.TextStyle = fyne.TextStyle{Bold: true}
 	heroSubtitle := widget.NewLabel("Clean safely, remove duplicates, and keep your computer healthy.")
@@ -465,6 +470,14 @@ func main() {
 			homeToCleanupBtn.Importance = widget.HighImportance
 		}
 		homeToCleanupBtn.Refresh()
+	}
+	homeToNetworkBtn.onHover = func(entered bool) {
+		if entered {
+			homeToNetworkBtn.Importance = widget.WarningImportance
+		} else {
+			homeToNetworkBtn.Importance = widget.HighImportance
+		}
+		homeToNetworkBtn.Refresh()
 	}
 	cacheTile := buildStatTile(localize(healthState.Accessibility.Language, "cache_size"), cacheSizeLabel, color.RGBA{R: 41, G: 98, B: 255, A: 255})
 	tempTile := buildStatTile(localize(healthState.Accessibility.Language, "temp_size"), tempSizeLabel, color.RGBA{R: 0, G: 137, B: 123, A: 255})
@@ -501,7 +514,7 @@ func main() {
 				container.NewVBox(
 					heroTitle,
 					heroSubtitle,
-					container.NewHBox(homeToDuplicateBtn, homeToCleanupBtn),
+					container.NewHBox(homeToDuplicateBtn, homeToCleanupBtn, homeToNetworkBtn),
 				),
 			)),
 		),
@@ -518,6 +531,7 @@ func main() {
 	var homeTabBtn *widget.Button
 	var duplicateTabBtn *widget.Button
 	var cleanupTabBtn *widget.Button
+	var networkTabBtn *widget.Button
 	var transitionSeq int64
 	animateSwitch := func(target fyne.CanvasObject) {
 		seq := atomic.AddInt64(&transitionSeq, 1)
@@ -560,20 +574,30 @@ func main() {
 			homeTabBtn.Importance = widget.MediumImportance
 			duplicateTabBtn.Importance = widget.MediumImportance
 			cleanupTabBtn.Importance = widget.HighImportance
+			networkTabBtn.Importance = widget.MediumImportance
+		} else if tab == "network" {
+			animateSwitch(networkView)
+			homeTabBtn.Importance = widget.MediumImportance
+			duplicateTabBtn.Importance = widget.MediumImportance
+			cleanupTabBtn.Importance = widget.MediumImportance
+			networkTabBtn.Importance = widget.HighImportance
 		} else if tab == "duplicate" {
 			animateSwitch(scanView)
 			homeTabBtn.Importance = widget.MediumImportance
 			duplicateTabBtn.Importance = widget.HighImportance
 			cleanupTabBtn.Importance = widget.MediumImportance
+			networkTabBtn.Importance = widget.MediumImportance
 		} else {
 			animateSwitch(homeView)
 			homeTabBtn.Importance = widget.HighImportance
 			duplicateTabBtn.Importance = widget.MediumImportance
 			cleanupTabBtn.Importance = widget.MediumImportance
+			networkTabBtn.Importance = widget.MediumImportance
 		}
 		homeTabBtn.Refresh()
 		duplicateTabBtn.Refresh()
 		cleanupTabBtn.Refresh()
+		networkTabBtn.Refresh()
 	}
 	homeTabBtn = widget.NewButtonWithIcon("", theme.HomeIcon(), func() {
 		updateTab("home")
@@ -584,12 +608,16 @@ func main() {
 	cleanupTabBtn = widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
 		updateTab("cleanup")
 	})
+	networkTabBtn = widget.NewButtonWithIcon("", theme.ComputerIcon(), func() {
+		updateTab("network")
+	})
 	settingsBtn := widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
-		openSettingsHub(duplicateSettingsTabs, cleanupSettingsTabs, updateTab, &healthState.Accessibility, func() {
+		openSettingsHub(duplicateSettingsTabs, cleanupSettingsTabs, networkSettings, updateTab, &healthState.Accessibility, func() {
 			applyAccessibilityTheme(a, healthState.Accessibility)
 			healthTitleLabel.SetText(localize(healthState.Accessibility.Language, "system_health"))
 			homeToDuplicateBtn.SetText(localize(healthState.Accessibility.Language, "duplicate_tab"))
 			homeToCleanupBtn.SetText(localize(healthState.Accessibility.Language, "cleanup_tab"))
+			homeToNetworkBtn.SetText(localize(healthState.Accessibility.Language, "network_tab"))
 			cacheSizeLabel.SetText(localize(healthState.Accessibility.Language, "cache_size") + ": ...")
 			tempSizeLabel.SetText(localize(healthState.Accessibility.Language, "temp_size") + ": ...")
 			dupCountLabel.SetText(fmt.Sprintf("%s: %d", localize(healthState.Accessibility.Language, "last_dups"), healthState.LastDuplicateGroups))
@@ -618,12 +646,14 @@ func main() {
 			makeSquareNavItem(homeTabBtn),
 			makeSquareNavItem(duplicateTabBtn),
 			makeSquareNavItem(cleanupTabBtn),
+			makeSquareNavItem(networkTabBtn),
 			widget.NewSeparator(),
 			makeSquareNavItem(settingsBtn),
 		)),
 	)
 	homeToDuplicateBtn.OnTapped = func() { updateTab("duplicate") }
 	homeToCleanupBtn.OnTapped = func() { updateTab("cleanup") }
+	homeToNetworkBtn.OnTapped = func() { updateTab("network") }
 	applyResponsiveDashboard := func(width float32) {
 		columns := 2
 		if width < 1450 {
@@ -643,6 +673,8 @@ func main() {
 	}
 	if strings.EqualFold(strings.TrimSpace(healthState.Accessibility.StartPage), "Cleanup") {
 		updateTab("cleanup")
+	} else if strings.EqualFold(strings.TrimSpace(healthState.Accessibility.StartPage), "Network Optimizer") {
+		updateTab("network")
 	} else if strings.EqualFold(strings.TrimSpace(healthState.Accessibility.StartPage), "Duplicate Files") {
 		updateTab("duplicate")
 	} else {
@@ -657,6 +689,9 @@ func main() {
 		})
 		canvas.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.Key2, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) {
 			updateTab("cleanup")
+		})
+		canvas.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.Key3, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) {
+			updateTab("network")
 		})
 		canvas.AddShortcut(&desktop.CustomShortcut{KeyName: fyne.KeyS, Modifier: fyne.KeyModifierControl}, func(fyne.Shortcut) {
 			settingsBtn.OnTapped()
@@ -719,6 +754,7 @@ func duplicateDeleteModeFromLabel(label string) cleanup.DeletionMode {
 func openSettingsHub(
 	duplicateSettings fyne.CanvasObject,
 	cleanupSettings fyne.CanvasObject,
+	networkSettings fyne.CanvasObject,
 	updateTab func(string),
 	prefs *accessibilityPrefs,
 	onPrefsChanged func(),
@@ -726,7 +762,7 @@ func openSettingsHub(
 	hub := fyne.CurrentApp().NewWindow(localize(prefs.Language, "settings"))
 	hub.Resize(fyne.NewSize(900, 620))
 
-	landingSelect := widget.NewSelect([]string{"Home", "Duplicate Files", "Cleanup"}, nil)
+	landingSelect := widget.NewSelect([]string{"Home", "Duplicate Files", "Cleanup", "Network Optimizer"}, nil)
 	landingSelect.SetSelected(prefs.StartPage)
 	themeSelect := widget.NewSelect([]string{"system", "dark", "light", "high-contrast-dark", "high-contrast-light"}, nil)
 	themeSelect.SetSelected(prefs.ThemeMode)
@@ -741,6 +777,8 @@ func openSettingsHub(
 		prefs.StartPage = strings.TrimSpace(landingSelect.Selected)
 		if landingSelect.Selected == "Cleanup" {
 			updateTab("cleanup")
+		} else if landingSelect.Selected == "Network Optimizer" {
+			updateTab("network")
 		} else if landingSelect.Selected == "Duplicate Files" {
 			updateTab("duplicate")
 		} else {
@@ -770,6 +808,10 @@ func openSettingsHub(
 			if rootTabs != nil {
 				rootTabs.SelectIndex(2)
 			}
+		case "network":
+			if rootTabs != nil {
+				rootTabs.SelectIndex(3)
+			}
 		default:
 			if rootTabs != nil {
 				rootTabs.SelectIndex(0)
@@ -787,6 +829,9 @@ func openSettingsHub(
 		case strings.Contains(q, "clean"), strings.Contains(q, "risk"), strings.Contains(q, "quarantine"):
 			settingsSearchResult.SetText("Jump: Cleanup settings")
 			jumpTo("cleanup")
+		case strings.Contains(q, "network"), strings.Contains(q, "dns"), strings.Contains(q, "winsock"):
+			settingsSearchResult.SetText("Jump: Network Optimizer settings")
+			jumpTo("network")
 		case strings.Contains(q, "theme"), strings.Contains(q, "language"), strings.Contains(q, "text"), strings.Contains(q, "home"):
 			settingsSearchResult.SetText("Jump: General settings")
 			jumpTo("general")
@@ -795,10 +840,11 @@ func openSettingsHub(
 		}
 	}
 	quickSettingsCards := container.NewGridWithColumns(
-		3,
+		4,
 		buildFeatureCard("General", "Theme, language, text size, default page", theme.SettingsIcon(), func() { jumpTo("general") }),
 		buildFeatureCard("Duplicate Files", "Matching mode, filters, deletion output", theme.SearchIcon(), func() { jumpTo("duplicate") }),
 		buildFeatureCard("Cleanup", "Risk, scope, reports, safety backup", theme.DeleteIcon(), func() { jumpTo("cleanup") }),
+		buildFeatureCard("Network Optimizer", "DNS refresh and repair actions", theme.ComputerIcon(), func() { jumpTo("network") }),
 	)
 	generalSection := container.NewVBox(
 		widget.NewLabel(localize(prefs.Language, "settings")),
@@ -816,6 +862,7 @@ func openSettingsHub(
 		container.NewTabItem(localize(prefs.Language, "settings"), container.NewPadded(generalSection)),
 		container.NewTabItem(localize(prefs.Language, "duplicate_tab"), duplicateSettings),
 		container.NewTabItem(localize(prefs.Language, "cleanup_tab"), cleanupSettings),
+		container.NewTabItem(localize(prefs.Language, "network_tab"), networkSettings),
 	)
 	rootTabs.SetTabLocation(container.TabLocationTop)
 
@@ -950,6 +997,7 @@ func localize(lang, key string) string {
 			"home_tab":      "Home",
 			"duplicate_tab": "Duplicate Files",
 			"cleanup_tab":   "Cleanup",
+			"network_tab":   "Network",
 			"system_health": "System Health",
 			"cache_size":    "Cache size",
 			"temp_size":     "Temp size",
@@ -967,6 +1015,7 @@ func localize(lang, key string) string {
 			"home_tab":      "خانه",
 			"duplicate_tab": "فایل‌های تکراری",
 			"cleanup_tab":   "پاکسازی",
+			"network_tab":   "بهینه‌سازی شبکه",
 			"system_health": "وضعیت سیستم",
 			"cache_size":    "حجم کش",
 			"temp_size":     "حجم فایل‌های موقت",
@@ -1308,6 +1357,160 @@ func parseCSVSet(raw string, normalizer func(string) string) map[string]struct{}
 		result[value] = struct{}{}
 	}
 	return result
+}
+
+func buildNetworkOptimizerView(parent fyne.Window) (fyne.CanvasObject, fyne.CanvasObject) {
+	actions := networkopt.AvailableActions()
+	dryRun := widget.NewCheck("Dry run (preview only)", nil)
+	dryRun.SetChecked(false)
+	timeoutSelect := widget.NewSelect([]string{"15", "30", "60", "120"}, nil)
+	timeoutSelect.SetSelected("60")
+	presetSelect := widget.NewSelect([]string{"Safe only", "Safe + moderate", "All actions", "None"}, nil)
+	presetSelect.SetSelected("Safe only")
+	autoSelect := widget.NewSelect([]string{"Safe only", "All actions", "None"}, nil)
+	autoSelect.SetSelected("Safe only")
+	status := widget.NewLabel("Select actions and click Run Network Optimizer.")
+	progress := widget.NewProgressBarInfinite()
+	progress.Hide()
+	output := widget.NewMultiLineEntry()
+	output.SetMinRowsVisible(14)
+	output.Wrapping = fyne.TextWrapWord
+	output.Disable()
+	selected := make(map[string]bool, len(actions))
+	checksByID := make(map[string]*widget.Check, len(actions))
+	actionRows := make([]fyne.CanvasObject, 0, len(actions))
+	applySelectionMode := func(mode string) {
+		normalized := strings.ToLower(strings.TrimSpace(mode))
+		for _, action := range actions {
+			want := false
+			switch normalized {
+			case "all actions":
+				want = true
+			case "safe + moderate":
+				want = action.Risk == networkopt.RiskSafe || action.Risk == networkopt.RiskModerate
+			case "none":
+				want = false
+			default:
+				want = action.Risk == networkopt.RiskSafe
+			}
+			selected[action.ID] = want
+			if check, ok := checksByID[action.ID]; ok {
+				check.SetChecked(want)
+			}
+		}
+	}
+	for _, item := range actions {
+		action := item
+		check := widget.NewCheck(fmt.Sprintf("%s (%s)", action.Name, action.Risk), func(checked bool) {
+			selected[action.ID] = checked
+		})
+		check.SetChecked(action.Risk == networkopt.RiskSafe)
+		checksByID[action.ID] = check
+		desc := widget.NewLabel(action.Description)
+		desc.Wrapping = fyne.TextWrapWord
+		actionRows = append(actionRows, container.NewVBox(check, desc, widget.NewSeparator()))
+	}
+	applySelectionMode(autoSelect.Selected)
+
+	var runBtn *widget.Button
+	runBtn = widget.NewButtonWithIcon("Run Network Optimizer", theme.ComputerIcon(), func() {
+		ids := make([]string, 0, len(selected))
+		for _, action := range actions {
+			if selected[action.ID] {
+				ids = append(ids, action.ID)
+			}
+		}
+		if len(ids) == 0 {
+			dialog.ShowInformation("No action selected", "Choose at least one optimization action.", parent)
+			return
+		}
+		runBtn.Disable()
+		progress.Show()
+		status.SetText("Applying network optimization actions...")
+		output.SetText("")
+		go func() {
+			timeoutSeconds, err := strconv.Atoi(strings.TrimSpace(timeoutSelect.Selected))
+			if err != nil || timeoutSeconds <= 0 {
+				timeoutSeconds = 60
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+			defer cancel()
+			report := networkopt.Run(ctx, ids, dryRun.Checked)
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("Started: %s\nFinished: %s\n\n", report.StartedAt.Local().Format(time.RFC3339), report.FinishedAt.Local().Format(time.RFC3339)))
+			for _, result := range report.Results {
+				state := "OK"
+				if !result.Executed {
+					state = "SKIPPED (dry run)"
+				} else if !result.Success {
+					state = "FAILED"
+				}
+				b.WriteString(fmt.Sprintf("- %s [%s] => %s (%s)\n", result.Name, result.Risk, state, result.Duration.Round(time.Millisecond)))
+				if strings.TrimSpace(result.Output) != "" {
+					b.WriteString("  Output: " + strings.TrimSpace(result.Output) + "\n")
+				}
+				if strings.TrimSpace(result.Error) != "" {
+					b.WriteString("  Error: " + strings.TrimSpace(result.Error) + "\n")
+				}
+			}
+			fyne.Do(func() {
+				progress.Hide()
+				runBtn.Enable()
+				status.SetText(fmt.Sprintf("Done. Success: %d, Failed: %d, Skipped: %d", report.SuccessCount(), report.FailedCount(), report.SkippedCount()))
+				output.SetText(b.String())
+			})
+		}()
+	})
+	runBtn.Importance = widget.HighImportance
+	applyPresetBtn := widget.NewButton("Apply Preset", func() {
+		applySelectionMode(presetSelect.Selected)
+		status.SetText("Preset applied: " + strings.TrimSpace(presetSelect.Selected))
+	})
+
+	mainView := container.NewBorder(
+		container.NewVBox(
+			widget.NewLabel("Network Optimizer"),
+			widget.NewLabel("Fix common network issues safely with one click."),
+			dryRun,
+			buildCustomSettingsForm([]settingsField{
+				{Label: "Action preset", Control: presetSelect},
+				{Label: "Command timeout (seconds)", Control: timeoutSelect},
+			}),
+			container.NewHBox(applyPresetBtn),
+			runBtn,
+			status,
+			progress,
+			widget.NewSeparator(),
+			widget.NewLabel("Actions"),
+			container.NewVScroll(container.NewVBox(actionRows...)),
+		),
+		nil, nil, nil,
+		container.NewVScroll(output),
+	)
+
+	autoSelect.OnChanged = func(value string) {
+		applySelectionMode(value)
+		status.SetText("Default action selection updated.")
+	}
+	timeoutDefaultSelect := widget.NewSelect([]string{"15", "30", "60", "120"}, func(value string) {
+		timeoutSelect.SetSelected(strings.TrimSpace(value))
+	})
+	timeoutDefaultSelect.SetSelected(timeoutSelect.Selected)
+	presetDefaultSelect := widget.NewSelect([]string{"Safe only", "Safe + moderate", "All actions", "None"}, func(value string) {
+		presetSelect.SetSelected(strings.TrimSpace(value))
+	})
+	presetDefaultSelect.SetSelected(presetSelect.Selected)
+	settingsView := container.NewPadded(container.NewVBox(
+		widget.NewLabel("Network Optimizer Settings"),
+		widget.NewLabel("Configure defaults for network fixes."),
+		buildCustomSettingsForm([]settingsField{
+			{Label: "Default action selection", Control: autoSelect},
+			{Label: "Default timeout (seconds)", Control: timeoutDefaultSelect},
+			{Label: "Default preset", Control: presetDefaultSelect},
+		}),
+		widget.NewLabel("Tip: choose Safe only for normal daily usage."),
+	))
+	return mainView, settingsView
 }
 
 func renderGroupsPreview(groups []duplicates.Group, maxGroups int, maxFilesPerGroup int) string {
