@@ -382,24 +382,24 @@ func main() {
 		}()
 	})
 
-	duplicateGeneralForm := widget.NewForm(
-		widget.NewFormItem("Dry run", dryRunCheck),
-		widget.NewFormItem("Scan speed", hashWorkersEntry),
-		widget.NewFormItem("How to detect duplicates", matchModeSelect),
-		widget.NewFormItem("Auto pick files to remove", autoSelectSelect),
-	)
-	duplicateFilterForm := widget.NewForm(
-		widget.NewFormItem("Skip file types", excludeExtsEntry),
-		widget.NewFormItem("Skip folders", excludeDirsEntry),
-		widget.NewFormItem("Minimum file size (bytes)", minSizeEntry),
-		widget.NewFormItem("Maximum file size (bytes)", maxSizeEntry),
-	)
-	duplicateOutputForm := widget.NewForm(
-		widget.NewFormItem("Report type", exportFormatSelect),
-		widget.NewFormItem("Save report to", exportPathEntry),
-		widget.NewFormItem("Remove duplicates by", deleteModeSelect),
-		widget.NewFormItem("Safety backup folder", quarantinePathEntry),
-	)
+	duplicateGeneralForm := buildCustomSettingsForm([]settingsField{
+		{Label: "Dry run", Control: dryRunCheck},
+		{Label: "Scan speed", Control: hashWorkersEntry},
+		{Label: "How to detect duplicates", Control: matchModeSelect},
+		{Label: "Auto pick files to remove", Control: autoSelectSelect},
+	})
+	duplicateFilterForm := buildCustomSettingsForm([]settingsField{
+		{Label: "Skip file types", Control: excludeExtsEntry},
+		{Label: "Skip folders", Control: excludeDirsEntry},
+		{Label: "Minimum file size (bytes)", Control: minSizeEntry},
+		{Label: "Maximum file size (bytes)", Control: maxSizeEntry},
+	})
+	duplicateOutputForm := buildCustomSettingsForm([]settingsField{
+		{Label: "Report type", Control: exportFormatSelect},
+		{Label: "Save report to", Control: exportPathEntry},
+		{Label: "Remove duplicates by", Control: deleteModeSelect},
+		{Label: "Safety backup folder", Control: quarantinePathEntry},
+	})
 	duplicateSettingsTabs := container.NewAppTabs(
 		container.NewTabItem("General", container.NewPadded(duplicateGeneralForm)),
 		container.NewTabItem("Filters", container.NewPadded(duplicateFilterForm)),
@@ -750,12 +750,12 @@ func openSettingsHub(
 			onPrefsChanged()
 		}
 	})
-	generalForm := widget.NewForm(
-		widget.NewFormItem(localize(prefs.Language, "home_page"), landingSelect),
-		widget.NewFormItem(localize(prefs.Language, "theme"), themeSelect),
-		widget.NewFormItem(localize(prefs.Language, "language"), languageSelect),
-		widget.NewFormItem(localize(prefs.Language, "text_size"), textSizeSelect),
-	)
+	generalForm := buildCustomSettingsForm([]settingsField{
+		{Label: localize(prefs.Language, "home_page"), Control: landingSelect},
+		{Label: localize(prefs.Language, "theme"), Control: themeSelect},
+		{Label: localize(prefs.Language, "language"), Control: languageSelect},
+		{Label: localize(prefs.Language, "text_size"), Control: textSizeSelect},
+	})
 	var rootTabs *container.AppTabs
 	settingsSearch := widget.NewEntry()
 	settingsSearch.SetPlaceHolder("Search settings (theme, language, duplicate, cleanup)")
@@ -1250,6 +1250,31 @@ func buildFeatureCard(title string, subtitle string, icon fyne.Resource, onOpen 
 	return container.NewStack(bg, content)
 }
 
+type settingsField struct {
+	Label   string
+	Control fyne.CanvasObject
+}
+
+func buildCustomSettingsForm(fields []settingsField) fyne.CanvasObject {
+	if len(fields) == 0 {
+		return container.NewVBox()
+	}
+	const labelWidth float32 = 220
+	rows := make([]fyne.CanvasObject, 0, len(fields)*2)
+	for i, field := range fields {
+		label := widget.NewLabel(field.Label)
+		label.Wrapping = fyne.TextWrapWord
+		label.Alignment = fyne.TextAlignLeading
+		labelCell := container.NewGridWrap(fyne.NewSize(labelWidth, label.MinSize().Height+12), label)
+		row := container.NewBorder(nil, nil, labelCell, nil, container.NewPadded(field.Control))
+		rows = append(rows, row)
+		if i < len(fields)-1 {
+			rows = append(rows, widget.NewSeparator())
+		}
+	}
+	return container.NewPadded(container.NewVBox(rows...))
+}
+
 func parseExtensions(raw string) map[string]struct{} {
 	return parseCSVSet(raw, func(v string) string {
 		v = strings.ToLower(strings.TrimSpace(v))
@@ -1556,33 +1581,33 @@ func buildCleanupView(parent fyne.Window, onCleanupFinished func(devcleanup.RunR
 		dryRun.SetChecked(true)
 	})
 
-	cleanupGeneralForm := widget.NewForm(
-		widget.NewFormItem("Dry run", dryRun),
-		widget.NewFormItem("Cleanup level", riskSelect),
-		widget.NewFormItem("Skip when apps are running", processAware),
-		widget.NewFormItem("Skip confirmation prompts", assumeYes),
-		widget.NewFormItem("Cleanup speed", parallelism),
-		widget.NewFormItem("Only clean files older than (hours)", minAgeHours),
-	)
-	cleanupScopeForm := widget.NewForm(
-		widget.NewFormItem("Include groups", includeCategories),
-		widget.NewFormItem("Include task IDs", includeIDs),
-		widget.NewFormItem("Exclude task IDs", excludeIDs),
-		widget.NewFormItem("Build folders location", patternRoots),
-	)
-	cleanupOutputForm := widget.NewForm(
-		widget.NewFormItem("Report type", reportFormat),
-		widget.NewFormItem("Save report to", reportPath),
-		widget.NewFormItem("Auto schedule", scheduleModeSelect),
-		widget.NewFormItem("Schedule profile", scheduledProfileSelect),
-		widget.NewFormItem("Schedule state file", scheduleStateEntry),
-		widget.NewFormItem("Scheduled reports folder", scheduledReportDirEntry),
-		widget.NewFormItem("Delete mode", cleanupDeleteModeSelect),
-		widget.NewFormItem("Safety backup folder", cleanupQuarantineEntry),
-		widget.NewFormItem("Undo window days", undoDaysEntry),
-		widget.NewFormItem("Restore backups", restoreUndoBtn),
-		widget.NewFormItem("Prune expired backups", pruneUndoBtn),
-	)
+	cleanupGeneralForm := buildCustomSettingsForm([]settingsField{
+		{Label: "Dry run", Control: dryRun},
+		{Label: "Cleanup level", Control: riskSelect},
+		{Label: "Skip when apps are running", Control: processAware},
+		{Label: "Skip confirmation prompts", Control: assumeYes},
+		{Label: "Cleanup speed", Control: parallelism},
+		{Label: "Only clean files older than (hours)", Control: minAgeHours},
+	})
+	cleanupScopeForm := buildCustomSettingsForm([]settingsField{
+		{Label: "Include groups", Control: includeCategories},
+		{Label: "Include task IDs", Control: includeIDs},
+		{Label: "Exclude task IDs", Control: excludeIDs},
+		{Label: "Build folders location", Control: patternRoots},
+	})
+	cleanupOutputForm := buildCustomSettingsForm([]settingsField{
+		{Label: "Report type", Control: reportFormat},
+		{Label: "Save report to", Control: reportPath},
+		{Label: "Auto schedule", Control: scheduleModeSelect},
+		{Label: "Schedule profile", Control: scheduledProfileSelect},
+		{Label: "Schedule state file", Control: scheduleStateEntry},
+		{Label: "Scheduled reports folder", Control: scheduledReportDirEntry},
+		{Label: "Delete mode", Control: cleanupDeleteModeSelect},
+		{Label: "Safety backup folder", Control: cleanupQuarantineEntry},
+		{Label: "Undo window days", Control: undoDaysEntry},
+		{Label: "Restore backups", Control: restoreUndoBtn},
+		{Label: "Prune expired backups", Control: pruneUndoBtn},
+	})
 	cleanupSettingsTabs := container.NewAppTabs(
 		container.NewTabItem("General", container.NewPadded(cleanupGeneralForm)),
 		container.NewTabItem("Scope", container.NewPadded(cleanupScopeForm)),
