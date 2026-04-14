@@ -80,3 +80,42 @@ func TestDetectWithOptionsInvalidWorkersDefaultsToOne(t *testing.T) {
 		t.Fatalf("expected one group, got %d", len(groups))
 	}
 }
+
+func TestDetectWithOptionsMatchModeName(t *testing.T) {
+	files := []model.FileMeta{
+		{Name: "same.txt", Path: "a/same.txt", Size: 10},
+		{Name: "same.txt", Path: "b/same.txt", Size: 99},
+		{Name: "other.txt", Path: "c/other.txt", Size: 10},
+	}
+	groups, errs := DetectWithOptions(files, func(path string) (string, error) {
+		return "", nil
+	}, nil, DetectOptions{HashWorkers: 2, MatchMode: MatchModeName})
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected one name-based group, got %d", len(groups))
+	}
+	if len(groups[0].Files) != 2 {
+		t.Fatalf("expected two files in name group, got %d", len(groups[0].Files))
+	}
+}
+
+func TestDetectWithOptionsMatchModeNameContent(t *testing.T) {
+	files := []model.FileMeta{
+		{Name: "same.txt", Path: "a/same.txt", Size: 10},
+		{Name: "same.txt", Path: "b/same.txt", Size: 10},
+		{Name: "diff.txt", Path: "c/diff.txt", Size: 10},
+	}
+	hashFn := func(path string) (string, error) { return "hash", nil }
+	groups, errs := DetectWithOptions(files, hashFn, nil, DetectOptions{HashWorkers: 2, MatchMode: MatchModeNameContent})
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected one name+content group, got %d", len(groups))
+	}
+	if len(groups[0].Files) != 2 {
+		t.Fatalf("expected two files in group, got %d", len(groups[0].Files))
+	}
+}

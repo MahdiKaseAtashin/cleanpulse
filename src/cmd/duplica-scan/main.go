@@ -33,6 +33,7 @@ func main() {
 	exportFormat := flag.String("export-format", "", "Export format: csv or json (optional)")
 	exportPath := flag.String("export-path", "", "Output path for exported report (optional)")
 	autoSelect := flag.String("auto-select", "", "Auto deletion selection strategy: newest or oldest (optional)")
+	matchMode := flag.String("match-mode", string(duplicates.MatchModeContent), "Duplicate matching mode: content|name|name+content|size")
 	flag.Parse()
 	if *showVersion {
 		fmt.Printf("duplica-scan %s\n", buildinfo.Version)
@@ -65,6 +66,7 @@ func main() {
 	console.PrintSummaryLine(fmt.Sprintf("Path: %s", *rootPath))
 	console.PrintSummaryLine(fmt.Sprintf("Dry run: %t", *dryRun))
 	console.PrintSummaryLine(fmt.Sprintf("Hash workers: %d", *hashWorkers))
+	console.PrintSummaryLine(fmt.Sprintf("Match mode: %s", *matchMode))
 
 	console.PrintStage("Stage 2/4: Discover and Hash")
 	fmt.Printf("Scanning: %s\n", *rootPath)
@@ -84,7 +86,10 @@ func main() {
 		scanSummary.Files,
 		hash.SHA256File,
 		console.OnHashProgress,
-		duplicates.DetectOptions{HashWorkers: *hashWorkers},
+		duplicates.DetectOptions{
+			HashWorkers: *hashWorkers,
+			MatchMode:   duplicates.MatchMode(strings.TrimSpace(strings.ToLower(*matchMode))),
+		},
 	)
 	fmt.Println()
 
