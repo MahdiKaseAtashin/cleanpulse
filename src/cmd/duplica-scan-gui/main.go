@@ -332,7 +332,7 @@ func main() {
 			onBack := func() {
 				fyne.Do(func() {
 					if content != nil {
-						content.Objects = []fyne.CanvasObject{scanView}
+						content.Objects = []fyne.CanvasObject{buildPageSurface(scanView)}
 						content.Refresh()
 					}
 					statusLabel.SetText("Ready")
@@ -366,7 +366,7 @@ func main() {
 				runBtn.Enable()
 				statusLabel.SetText(fmt.Sprintf("Done in %s", time.Since(start).Round(time.Millisecond)))
 				if content != nil {
-					content.Objects = []fyne.CanvasObject{resultsView}
+					content.Objects = []fyne.CanvasObject{buildPageSurface(resultsView)}
 					content.Refresh()
 				}
 			})
@@ -441,7 +441,6 @@ func main() {
 	heroCardBg := canvas.NewRectangle(color.RGBA{R: 26, G: 30, B: 38, A: 255})
 	heroCardBg.CornerRadius = 10
 	startPulseAnimation(heroGlow)
-	startCardLiftAnimation(heroLiftSpacer, heroCardBg)
 	homeToDuplicateBtn.onHover = func(entered bool) {
 		if entered {
 			homeToDuplicateBtn.Importance = widget.WarningImportance
@@ -505,7 +504,7 @@ func main() {
 		nil,
 		container.NewVScroll(container.NewVBox(heroSection, healthCard, widget.NewLabel("Quick actions"), modulesArea)),
 	)
-	content = container.NewMax(homeView)
+	content = container.NewMax(buildPageSurface(homeView))
 
 	var homeTabBtn *widget.Button
 	var duplicateTabBtn *widget.Button
@@ -530,7 +529,7 @@ func main() {
 							nil,
 							nil,
 							nil,
-							target,
+							buildPageSurface(target),
 						),
 					}
 					content.Refresh()
@@ -541,7 +540,7 @@ func main() {
 				return
 			}
 			fyne.Do(func() {
-				content.Objects = []fyne.CanvasObject{target}
+				content.Objects = []fyne.CanvasObject{buildPageSurface(target)}
 				content.Refresh()
 			})
 		}()
@@ -1232,26 +1231,12 @@ func startPulseAnimation(target *canvas.Circle) {
 	}()
 }
 
-func startCardLiftAnimation(spacer *canvas.Rectangle, bg *canvas.Rectangle) {
-	if spacer == nil || bg == nil {
-		return
-	}
-	go func() {
-		ticker := time.NewTicker(55 * time.Millisecond)
-		defer ticker.Stop()
-		start := time.Now()
-		for t := range ticker.C {
-			phase := float64(t.Sub(start).Milliseconds()%2600) / 2600.0
-			offset := float32(2 + 4*(0.5+0.5*math.Sin(phase*2*math.Pi)))
-			alpha := uint8(245 + 10*(0.5+0.5*math.Sin(phase*2*math.Pi)))
-			fyne.Do(func() {
-				spacer.SetMinSize(fyne.NewSize(1, offset))
-				bg.FillColor = color.RGBA{R: 26, G: 30, B: 38, A: alpha}
-				spacer.Refresh()
-				bg.Refresh()
-			})
-		}
-	}()
+func buildPageSurface(page fyne.CanvasObject) fyne.CanvasObject {
+	bg := canvas.NewRectangle(color.RGBA{R: 16, G: 19, B: 25, A: 255})
+	return container.NewStack(
+		bg,
+		container.NewPadded(page),
+	)
 }
 
 func buildStatTile(title string, value *widget.Label, accent color.Color) fyne.CanvasObject {
