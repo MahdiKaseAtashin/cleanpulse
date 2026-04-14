@@ -1029,6 +1029,17 @@ func buildCleanupView(parent fyne.Window, onCleanupFinished func(devcleanup.RunR
 		})
 	}
 
+	helpText := widget.NewMultiLineEntry()
+	helpText.Disable()
+	helpText.Wrapping = fyne.TextWrapWord
+	helpText.SetMinRowsVisible(9)
+	refreshHelpText := func() {
+		helpText.SetText(buildCleanupExplainerText(riskSelect.Selected, includeCategories.Text))
+	}
+	riskSelect.OnChanged = func(string) { refreshHelpText() }
+	includeCategories.OnChanged = func(string) { refreshHelpText() }
+	refreshHelpText()
+
 	var runBtn *widget.Button
 	runBtn = widget.NewButton("Start Cleanup", func() {
 		p, err := parseInt(parallelism.Text, runtime.NumCPU())
@@ -1210,6 +1221,8 @@ func buildCleanupView(parent fyne.Window, onCleanupFinished func(devcleanup.RunR
 				}),
 			),
 			status,
+			widget.NewLabel("What this does (help)"),
+			helpText,
 		),
 		nil,
 		nil,
@@ -1218,6 +1231,57 @@ func buildCleanupView(parent fyne.Window, onCleanupFinished func(devcleanup.RunR
 	)
 	cleanupRoot = container.NewMax(mainView)
 	return cleanupRoot, cleanupSettingsTabs
+}
+
+func buildCleanupExplainerText(risk string, includeCategoriesRaw string) string {
+	risk = strings.ToLower(strings.TrimSpace(risk))
+	riskGuide := map[string]string{
+		"safe":       "Safe: removes temporary/cache files that are usually recreated automatically. Lowest chance of side effects.",
+		"moderate":   "Moderate: removes larger app/tool caches and logs. Usually safe, but some apps may need to rebuild cache.",
+		"aggressive": "Aggressive: can remove build artifacts or heavy data that may take time to rebuild. Review before running.",
+	}
+	typeGuide := map[string]string{
+		"os-temp":         "OS Temp: temporary system/user files that apps can recreate.",
+		"package-manager": "Package Manager: npm/pip/nuget/gradle/cargo caches; frees space but may slow next install briefly.",
+		"browser":         "Browser: Chrome/Edge/Firefox cache data; safe for space, may sign out some sessions in rare cases.",
+		"logs":            "Logs: app crash and log files; useful for troubleshooting but safe to remove when not needed.",
+		"build-artifact":  "Build Artifact: bin/obj/dist/target outputs; safe if you can rebuild projects.",
+		"ide":             "IDE: VS Code/JetBrains/Visual Studio caches; may reset some workspace state.",
+		"container":       "Container: Docker-related cleanup; can be high impact depending on images/volumes.",
+		"gaming":          "Gaming: launcher/shader caches; usually safe and regenerated.",
+		"android":         "Android: emulator/build caches; can free a lot but may trigger redownload/rebuild.",
+		"flutter":         "Flutter/Dart: tool and package caches; safe but next build can be slower.",
+		"ios":             "iOS/macOS dev caches: simulator/tool data; review before aggressive cleanup.",
+	}
+
+	selected := parseNames(includeCategoriesRaw)
+	lines := []string{
+		"Selected risk level:",
+		"- " + riskGuide[risk],
+		"",
+		"Cleanup types:",
+	}
+	if len(selected) == 0 {
+		keys := []string{"os-temp", "package-manager", "browser", "logs", "build-artifact", "ide", "container", "gaming", "android", "flutter", "ios"}
+		for _, key := range keys {
+			lines = append(lines, "- "+typeGuide[key])
+		}
+	} else {
+		keys := make([]string, 0, len(selected))
+		for key := range selected {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if text, ok := typeGuide[key]; ok {
+				lines = append(lines, "- "+text)
+			} else {
+				lines = append(lines, "- "+key+": custom category selected.")
+			}
+		}
+	}
+	lines = append(lines, "", "Tip: Use \"Move to safety backup\" in Output settings for an undo option.")
+	return strings.Join(lines, "\n")
 }
 
 func showCleanupResults(parent fyne.Window, root *fyne.Container, backView fyne.CanvasObject, report devcleanup.RunReport, runLog string) {
