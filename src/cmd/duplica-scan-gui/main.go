@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"duplica-scan/src/internal/buildinfo"
+	"duplica-scan/src/internal/devcleanup"
 	"duplica-scan/src/internal/duplicates"
 	"duplica-scan/src/internal/hash"
 	"duplica-scan/src/internal/report"
@@ -311,7 +313,13 @@ func main() {
 		nil,
 		container.NewVScroll(output),
 	)
-	w.SetContent(scanView)
+	cleanupView := buildCleanupView(w)
+	tabs := container.NewAppTabs(
+		container.NewTabItem("Duplicate Files", scanView),
+		container.NewTabItem("Dev Cleanup", cleanupView),
+	)
+	tabs.SetTabLocation(container.TabLocationTop)
+	w.SetContent(tabs)
 	w.ShowAndRun()
 }
 
@@ -404,6 +412,232 @@ func renderGroups(groups []duplicates.Group) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func buildCleanupView(parent fyne.Window) fyne.CanvasObject {
+	riskSelect := widget.NewSelect([]string{"safe", "moderate", "aggressive"}, nil)
+	riskSelect.SetSelected("safe")
+	dryRun := widget.NewCheck("Dry run (recommended)", nil)
+	dryRun.SetChecked(true)
+	processAware := widget.NewCheck("Skip cleanup when related apps are running", nil)
+	processAware.SetChecked(true)
+	assumeYes := widget.NewCheck("Assume yes (no per-task confirmations)", nil)
+	assumeYes.SetChecked(false)
+
+	parallelism := widget.NewEntry()
+	parallelism.SetText(strconv.Itoa(runtime.NumCPU()))
+	minAgeHours := widget.NewEntry()
+	minAgeHours.SetText("24")
+
+	includeCategories := widget.NewEntry()
+	includeCategories.SetPlaceHolder("os-temp,package-manager,ide")
+	includeIDs := widget.NewEntry()
+	includeIDs.SetPlaceHolder("optional task IDs")
+	excludeIDs := widget.NewEntry()
+	excludeIDs.SetPlaceHolder("optional task IDs")
+	patternRoots := widget.NewEntry()
+	patternRoots.SetPlaceHolder("project-build-artifacts=D:/Projects|D:/Workspaces")
+
+	reportFormat := widget.NewSelect([]string{"none", "json", "md", "html"}, nil)
+	reportFormat.SetSelected("none")
+	reportPath := widget.NewEntry()
+	reportPath.SetPlaceHolder("./reports/dev-cleanup-report.json")
+
+	status := widget.NewLabel("Ready")
+	output := widget.NewMultiLineEntry()
+	output.Wrapping = fyne.TextWrapWord
+	output.Disable()
+
+	appendOutput := func(text string) {
+		fyne.Do(func() {
+			output.SetText(output.Text + text + "\n")
+		})
+	}
+
+	var runBtn *widget.Button
+	runBtn = widget.NewButton("Run Cleanup", func() {
+		p, err := parseInt(parallelism.Text, runtime.NumCPU())
+		if err != nil || p < 1 {
+			dialog.ShowInformation("Invalid parallelism", "Parallelism must be a positive integer.", parent)
+			return
+		}
+		minHours, err := parseInt(minAgeHours.Text, 24)
+		if err != nil || minHours < 0 {
+			dialog.ShowInformation("Invalid min age", "Min age hours must be zero or positive.", parent)
+			return
+		}
+
+		cfg := devcleanup.Config{
+			MaxRisk:           devcleanup.ParseRiskLevel(strings.TrimSpace(strings.ToLower(riskSelect.Selected))),
+			DryRun:            dryRun.Checked,
+			AssumeYes:         assumeYes.Checked,
+			Verbose:           false,
+			Parallelism:       p,
+			MinAge:            time.Duration(minHours) * time.Hour,
+			ProcessAware:      processAware.Checked,
+			IncludeCategories: parseNames(includeCategories.Text),
+			IncludeIDs:        parseNames(includeIDs.Text),
+			ExcludeIDs:        parseNames(excludeIDs.Text),
+			PathOverrides:     map[string][]string{},
+			PatternRoots:      parsePatternRootsArg(patternRoots.Text),
+		}
+
+		env, err := guiEnvironment()
+		if err != nil {
+			dialog.ShowError(err, parent)
+			return
+		}
+		engine := devcleanup.NewEngine(
+			devcleanup.BuiltinProviders(env),
+			devcleanup.Logger{Out: os.Stdout, Verbose: false},
+			nil,
+		)
+
+		output.SetText("")
+		runBtn.Disable()
+		status.SetText("Running cleanup...")
+		appendOutput("Starting cleanup run")
+		go func() {
+			report, runErr := engine.Run(context.Background(), cfg)
+			if runErr != nil {
+				fyne.Do(func() {
+					runBtn.Enable()
+					status.SetText("Cleanup failed")
+					dialog.ShowError(runErr, parent)
+				})
+				return
+			}
+
+			appendOutput(fmt.Sprintf("Planned tasks: %d | Attempted: %d | Skipped: %d", report.Planned, report.Attempted, report.Skipped))
+			appendOutput(fmt.Sprintf("Reclaimed bytes: %d", report.ReclaimedBytes))
+			appendOutput(fmt.Sprintf("Duration: %s", report.Duration.Round(time.Millisecond)))
+
+			if reportFormat.Selected != "none" {
+				path := strings.TrimSpace(reportPath.Text)
+				if path == "" {
+					path = defaultCleanupReportPath(reportFormat.Selected)
+				}
+				if err := writeCleanupReport(path, reportFormat.Selected, report); err != nil {
+					appendOutput(fmt.Sprintf("Report write failed: %v", err))
+				} else {
+					appendOutput("Report exported: " + path)
+				}
+			}
+
+			fyne.Do(func() {
+				runBtn.Enable()
+				status.SetText("Cleanup finished")
+			})
+		}()
+	})
+
+	quickTempBtn := widget.NewButton("Quick Temp Cleanup", func() {
+		includeCategories.SetText("os-temp")
+		riskSelect.SetSelected("safe")
+		dryRun.SetChecked(true)
+	})
+
+	form := widget.NewForm(
+		widget.NewFormItem("Risk", riskSelect),
+		widget.NewFormItem("Parallelism", parallelism),
+		widget.NewFormItem("Min age hours", minAgeHours),
+		widget.NewFormItem("Include categories", includeCategories),
+		widget.NewFormItem("Include IDs", includeIDs),
+		widget.NewFormItem("Exclude IDs", excludeIDs),
+		widget.NewFormItem("Pattern roots", patternRoots),
+		widget.NewFormItem("Report format", reportFormat),
+		widget.NewFormItem("Report path", reportPath),
+	)
+
+	return container.NewBorder(
+		container.NewVBox(
+			widget.NewLabel("Developer cleanup and temp-cache maintenance"),
+			dryRun,
+			processAware,
+			assumeYes,
+			form,
+			container.NewHBox(runBtn, quickTempBtn),
+			status,
+		),
+		nil,
+		nil,
+		nil,
+		container.NewVScroll(output),
+	)
+}
+
+func parsePatternRootsArg(raw string) map[string][]string {
+	result := make(map[string][]string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return result
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		sides := strings.SplitN(part, "=", 2)
+		if len(sides) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(strings.ToLower(sides[0]))
+		if key == "" {
+			continue
+		}
+		paths := make([]string, 0, 4)
+		for _, p := range strings.Split(sides[1], "|") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			paths = append(paths, p)
+		}
+		if len(paths) == 0 {
+			continue
+		}
+		result[key] = paths
+	}
+	return result
+}
+
+func guiEnvironment() (devcleanup.Environment, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return devcleanup.Environment{}, err
+	}
+	return devcleanup.Environment{
+		OS:      runtime.GOOS,
+		HomeDir: home,
+		TempDir: os.TempDir(),
+	}, nil
+}
+
+func defaultCleanupReportPath(format string) string {
+	base := fmt.Sprintf("dev-cleanup-report-%s", time.Now().Format("20060102-150405"))
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "json":
+		return filepath.Join(".", "reports", base+".json")
+	case "md":
+		return filepath.Join(".", "reports", base+".md")
+	case "html":
+		return filepath.Join(".", "reports", base+".html")
+	default:
+		return filepath.Join(".", "reports", base+".txt")
+	}
+}
+
+func writeCleanupReport(path, format string, report devcleanup.RunReport) error {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "json":
+		return devcleanup.WriteJSONReport(path, report)
+	case "md":
+		return devcleanup.WriteMarkdownReport(path, report)
+	case "html":
+		return devcleanup.WriteHTMLReport(path, report)
+	default:
+		return fmt.Errorf("unsupported report format: %s", format)
+	}
 }
 
 const (
