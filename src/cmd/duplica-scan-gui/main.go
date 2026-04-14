@@ -295,12 +295,21 @@ func main() {
 		widget.NewFormItem("Export format", exportFormatSelect),
 		widget.NewFormItem("Export path", exportPathEntry),
 	)
+	openDuplicateSettings := func() {
+		settingsContent := container.NewVScroll(container.NewVBox(
+			widget.NewLabel("Duplicate scan advanced settings"),
+			dryRunCheck,
+			form,
+		))
+		settingsContent.SetMinSize(fyne.NewSize(700, 480))
+		dialog.NewCustom("Duplicate Scan Settings", "Close", settingsContent, w).Show()
+	}
 
 	scanView = container.NewBorder(
 		container.NewVBox(
 			widget.NewLabel(fmt.Sprintf("Duplica Scan GUI %s", buildinfo.Version)),
-			dryRunCheck,
-			form,
+			widget.NewLabel("Basic mode: choose a path and run."),
+			container.NewBorder(nil, nil, nil, browseBtn, pathEntry),
 			runBtn,
 			statusLabel,
 			stepLabel,
@@ -313,12 +322,18 @@ func main() {
 		nil,
 		container.NewVScroll(output),
 	)
-	cleanupView := buildCleanupView(w)
+	cleanupView, openCleanupSettings := buildCleanupView(w)
 	tabs := container.NewAppTabs(
 		container.NewTabItem("Duplicate Files", scanView),
 		container.NewTabItem("Dev Cleanup", cleanupView),
 	)
 	tabs.SetTabLocation(container.TabLocationTop)
+
+	settingsMenu := fyne.NewMenu("Settings",
+		fyne.NewMenuItem("Duplicate Scan...", openDuplicateSettings),
+		fyne.NewMenuItem("Dev Cleanup...", openCleanupSettings),
+	)
+	w.SetMainMenu(fyne.NewMainMenu(settingsMenu))
 	w.SetContent(tabs)
 	w.ShowAndRun()
 }
@@ -414,7 +429,7 @@ func renderGroups(groups []duplicates.Group) string {
 	return b.String()
 }
 
-func buildCleanupView(parent fyne.Window) fyne.CanvasObject {
+func buildCleanupView(parent fyne.Window) (fyne.CanvasObject, func()) {
 	riskSelect := widget.NewSelect([]string{"safe", "moderate", "aggressive"}, nil)
 	riskSelect.SetSelected("safe")
 	dryRun := widget.NewCheck("Dry run (recommended)", nil)
@@ -442,6 +457,20 @@ func buildCleanupView(parent fyne.Window) fyne.CanvasObject {
 	reportFormat.SetSelected("none")
 	reportPath := widget.NewEntry()
 	reportPath.SetPlaceHolder("./reports/dev-cleanup-report.json")
+	targetPathEntry := widget.NewEntry()
+	targetPathEntry.SetPlaceHolder("Optional project path")
+	targetBrowseBtn := widget.NewButton("Browse...", func() {
+		dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
+			if err != nil {
+				dialog.ShowError(err, parent)
+				return
+			}
+			if uri == nil {
+				return
+			}
+			targetPathEntry.SetText(uri.Path())
+		}, parent).Show()
+	})
 
 	status := widget.NewLabel("Ready")
 	output := widget.NewMultiLineEntry()
@@ -480,6 +509,12 @@ func buildCleanupView(parent fyne.Window) fyne.CanvasObject {
 			ExcludeIDs:        parseNames(excludeIDs.Text),
 			PathOverrides:     map[string][]string{},
 			PatternRoots:      parsePatternRootsArg(patternRoots.Text),
+		}
+		targetPath := strings.TrimSpace(targetPathEntry.Text)
+		if targetPath != "" {
+			if _, exists := cfg.PatternRoots["project-build-artifacts"]; !exists {
+				cfg.PatternRoots["project-build-artifacts"] = []string{targetPath}
+			}
 		}
 
 		env, err := guiEnvironment()
@@ -537,7 +572,7 @@ func buildCleanupView(parent fyne.Window) fyne.CanvasObject {
 		dryRun.SetChecked(true)
 	})
 
-	form := widget.NewForm(
+	settingsForm := widget.NewForm(
 		widget.NewFormItem("Risk", riskSelect),
 		widget.NewFormItem("Parallelism", parallelism),
 		widget.NewFormItem("Min age hours", minAgeHours),
@@ -548,14 +583,23 @@ func buildCleanupView(parent fyne.Window) fyne.CanvasObject {
 		widget.NewFormItem("Report format", reportFormat),
 		widget.NewFormItem("Report path", reportPath),
 	)
-
-	return container.NewBorder(
-		container.NewVBox(
-			widget.NewLabel("Developer cleanup and temp-cache maintenance"),
+	openSettings := func() {
+		settingsContent := container.NewVScroll(container.NewVBox(
+			widget.NewLabel("Developer cleanup advanced settings"),
 			dryRun,
 			processAware,
 			assumeYes,
-			form,
+			settingsForm,
+		))
+		settingsContent.SetMinSize(fyne.NewSize(700, 520))
+		dialog.NewCustom("Dev Cleanup Settings", "Close", settingsContent, parent).Show()
+	}
+
+	view := container.NewBorder(
+		container.NewVBox(
+			widget.NewLabel("Developer cleanup and temp-cache maintenance"),
+			widget.NewLabel("Basic mode: choose an optional path and run."),
+			container.NewBorder(nil, nil, nil, targetBrowseBtn, targetPathEntry),
 			container.NewHBox(runBtn, quickTempBtn),
 			status,
 		),
@@ -564,6 +608,7 @@ func buildCleanupView(parent fyne.Window) fyne.CanvasObject {
 		nil,
 		container.NewVScroll(output),
 	)
+	return view, openSettings
 }
 
 func parsePatternRootsArg(raw string) map[string][]string {
