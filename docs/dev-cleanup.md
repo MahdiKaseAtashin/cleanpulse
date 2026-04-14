@@ -13,7 +13,7 @@
   - Builtin provider can be complemented by more providers.
 - Pattern tasks support controlled artifact cleanup (`bin/obj/dist/target`) only under explicit roots.
 - IO layer: `src/internal/devcleanup/io.go`
-  - Console confirmation and JSON reporting.
+  - Console confirmation and JSON/Markdown/HTML reporting.
 
 ## Risk Model
 

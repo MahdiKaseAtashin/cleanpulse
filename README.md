@@ -257,5 +257,6 @@ Common flags:
 - `-exclude-ids=<task-id1,task-id2>`
 - `-pattern-roots=project-build-artifacts=D:/Projects|D:/Workspaces`
 - `-config=./cleanup-config.json`
+- `-report-format=json|md|html`
 
 See `docs/dev-cleanup.md` for architecture and strategy guidance.

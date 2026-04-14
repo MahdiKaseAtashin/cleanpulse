@@ -26,7 +26,8 @@ func main() {
 	excludeIDs := flag.String("exclude-ids", "", "Comma-separated cleanup IDs to exclude")
 	patternRoots := flag.String("pattern-roots", "", "Pattern roots as task=path1|path2,task2=path3")
 	configPath := flag.String("config", "", "Optional JSON config file")
-	reportPath := flag.String("report", "", "Optional JSON output report path")
+	reportPath := flag.String("report", "", "Optional output report path")
+	reportFormat := flag.String("report-format", "json", "Report format: json|md|html")
 	flag.Parse()
 
 	cfg := devcleanup.Config{
@@ -67,7 +68,7 @@ func main() {
 	}
 	devcleanup.PrintRunSummary(os.Stdout, report)
 	if *reportPath != "" {
-		if err := devcleanup.WriteJSONReport(*reportPath, report); err != nil {
+		if err := writeReport(*reportPath, *reportFormat, report); err != nil {
 			log.Fatalf("failed to write report: %v", err)
 		}
 		fmt.Printf("Report written to %s\n", *reportPath)
@@ -168,4 +169,17 @@ func parsePatternRoots(raw string) map[string][]string {
 		result[id] = paths
 	}
 	return result
+}
+
+func writeReport(path, format string, report devcleanup.RunReport) error {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "json":
+		return devcleanup.WriteJSONReport(path, report)
+	case "md", "markdown":
+		return devcleanup.WriteMarkdownReport(path, report)
+	case "html":
+		return devcleanup.WriteHTMLReport(path, report)
+	default:
+		return fmt.Errorf("unsupported report format: %s", format)
+	}
 }
